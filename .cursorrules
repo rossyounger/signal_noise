@@ -1,0 +1,28 @@
+# Project intent
+Implement the Signal/Noise MVP pipeline: Ingest → Segment → Save → Review → Label → Search, with manual transcription support.
+
+# Folder map
+/src              # ingestion modules, future segmentation code
+/scripts          # CLI utilities (ingest, transcription)
+/sql              # database migrations (/sql/00x_*.sql)
+/docs/PRD.md      # product specification (single source of truth)
+/tests            # pytest suites
+/configs          # Retool or environment config (if any)
+
+# Canonical references
+docs/PRD.md defines requirements and data model expectations.
+Segments must capture: document_id, start/end offsets, status, version, labels JSONB, provenance.
+Transcriptions flow through scripts/ queue + run; assets JSON structure must remain consistent.
+
+# Coding constraints
+Python 3.11
+Supabase Postgres backend
+feedparser / requests / psycopg for ingestion, optional AssemblyAI/OpenAI clients
+Lint with ruff, tests with pytest
+Future FastAPI service should read from existing models.
+
+# Agent guidance
+Align all changes with docs/PRD.md.
+Preserve provenance; no raw blob duplication.
+Prefer explicit scripts/migrations over ad-hoc SQL.
+Document new CLI usage in README when functionality changes.
