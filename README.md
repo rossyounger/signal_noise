@@ -66,3 +66,43 @@ Each script is safe to rerun; it upserts on `(source_id, external_id)`.
 - Re-running the same document just adds more transcript assets; nothing is deleted automatically. Use Supabase Studio or downstream code to view/merge snippets as needed.
 
 The workflow is manual by design: copy the document ID from Supabase (or the list script), queue the job, run it. Later you can wire this into a cron job or UI without changing the commands.
+
+## Segment Generation Flow (FR3–FR5)
+
+1. **Select documents**
+   - In Retool, select one or more `documents` rows and trigger a query that inserts into the `segment_generation_requests` table (one row per document). The same insert can be performed from the CLI:
+     ```bash
+     python scripts/queue_segments.py <doc_id_1> <doc_id_2>
+     ```
+     Optional flags: `--created-by` (your initials) and `--options '{"prefer_transcript": true}'`.
+     - The queue script skips anything already pending and sets `documents.segment_status='queued'` so you can filter for items awaiting processing.
+
+2. **Process the queue**
+   ```bash
+   python scripts/run_segmenter.py --once  # process a single pending request
+   python scripts/run_segmenter.py         # keep running, polling every 5s
+   ```
+   - Pulls the next `pending` request, finds the best text source (full article text or latest transcript asset), chunks it, optionally calls the LLM regrouping helper, and writes `segments` rows with `segment_status='proposed'`.
+   - Existing `proposed`/`final` segments for that document are marked `superseded` and the version number is incremented so edits stay auditable.
+   - The worker updates the parent `documents` row (`segment_status='running'` → `generated` or `failed`, plus `segment_version`/`segment_updated_at`).
+
+3. **Review & edit**
+   - Retool surfaces the destination `segments` table. Analysts tweak `text`, `start_offset`, `end_offset`, add notes/labels, and promote status to `final` when satisfied.
+   - Retry any failed queue items by updating `segment_generation_requests.status` back to `pending` (the document row stays `queued` until processed again).
+
+### Worker options
+
+`run_segmenter.py` supports:
+- `--document-id=<uuid>` to restrict processing to a single document.
+- `--poll-interval=<seconds>` to adjust the background loop cadence.
+- `--log-level=DEBUG` for verbose troubleshooting.
+
+The worker expects `SUPABASE_DB_URL` (or `--dsn`) to point at the Supabase instance.
+
+### Table additions
+
+- `segments`: stores generated snippets (`document_id`, offsets, `segment_status`, `version`, `labels`, `provenance`).
+- `segment_generation_requests`: simple queue for pending segmentation actions (`document_id`, `created_by`, `options`, status/error state`).
+- `documents` now tracks snippet lifecycle with `segment_status`, `segment_version`, and `segment_updated_at`, making it easy to find unsegmented sources.
+
+Retool should expose both tables so you can: pick documents to queue, monitor status, and edit the resulting snippets without leaving the UI.

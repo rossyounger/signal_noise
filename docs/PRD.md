@@ -21,46 +21,49 @@
 - Maintain `sources` table for feed metadata (type, URL, polling cadence).
 - Manual/CLI scripts already exist (`ingest_stratechery.py`, `ingest_sharptech_podcast.py`).
 
-### FR2 – Segment (Snippets Generator)
+### FR2 – On-Demand Transcription
+- Allow human-triggered transcription for any audio document or segment window.
+- CLI workflow:
+  1. List audio documents (`scripts/list_audio_documents.py`).
+  2. Queue transcription with provider + optional start/end (`scripts/queue_transcription.py`).
+  3. Process request via provider adapter (`scripts/run_transcription.py`).
+- Providers supported: OpenAI Whisper (<= 23 min) and AssemblyAI (full-length).
+- Transcription results:
+  - Full runs update `documents.content_text`, append transcript asset, mark `transcript_status='complete'`.
+  - Segment runs append transcript snippets to `documents.assets`, store raw text in `transcription_requests.result_text`, set `transcript_status='partial'`.
+- `transcription_requests` table records provider, model, timestamps, status, raw text, metadata. Future automation can poll this queue.
+
+### FR3 – Segment (Snippets Generator)
 - Split long-form content into topical snippets. For text, plan pre-chunking + LLM regrouping; for audio, run on transcripts once available.
 - Each snippet stores `document_id`, offsets (`start_char`, `end_char` for text; timestamps for audio), and raw text.
 - Ensure segments can be regenerated to maintain provenance.
+- Segment selection flows through Retool: analysts pick `documents` rows and enqueue a request in `segment_generation_requests`; a worker script processes the queue and writes rows to `segments` with `segment_status='proposed'`.
+- Source documents track snippet lifecycle via `documents.segment_status` (`not_started`, `queued`, `running`, `generated`, `failed`) and `segment_version` so analysts can filter for items that still need segmentation.
 
-### FR3 – Save Segments
+### FR4 – Save Segments
 - Persist snippets in a `segments` table with:
   - `document_id`, `text`, `start_offset`, `end_offset`
   - `segment_status` (`proposed`, `final`, `superseded`)
   - `version` integer, `labels` JSONB (empty by default)
   - Provenance metadata (e.g., audio timestamps, HTML path)
 - Support updates when segments are refined or superseded.
+- Segment generation worker auto-supersedes existing `proposed`/`final` rows before inserting a new version, and updates `documents.segment_status`/`segment_version` to keep the source record of truth.
 
-### FR4 – Review (Retool Builder Console)
+### FR5 – Review (Retool Builder Console)
 - Expose Supabase tables via Retool / lightweight UI immediately after save.
 - Ability to browse documents, view segments, edit text/offsets, add notes/hypotheses, and enqueue manual actions (e.g., transcription requests).
 - Acts as the primary schema-shaping UI during MVP.
+- UI includes a queued segments view with retry controls and inline editing/promotion of `segment_status`.
 
-### FR5 – Labeler (AI Assist + Manual)
+### FR6 – Labeler (AI Assist + Manual)
 - Provide labeling workflow inside Retool to tag segments with entities (`company`, `person`, `topic`, etc.).
 - Optional AI suggestions stored in `labels` JSONB; human can approve/edit.
 - Track label provenance (auto vs manual).
 
-### FR6 – Search & Context Export
+### FR7 – Search & Context Export
 - Query finalized segments by source, label, free text.
 - Export a curated bundle (snippets + metadata) for downstream LLM prompts.
 - Support BM25 or vector indexing later—initial pass can rely on SQL text search.
-
-### FR7 – Audio Transcription (Added in this iteration)
-- Allow manual, on-demand transcription for podcast segments.
-- CLI workflow:
-  1. List audio documents (`scripts/list_audio_documents.py`).
-  2. Queue transcription with provider + optional start/end (`scripts/queue_transcription.py`).
-  3. Process request via provider adapter (`scripts/run_transcription.py`).
-- Providers supported: OpenAI Whisper (short clips) and AssemblyAI (long-form).
-- Transcription results:
-  - Full runs update `documents.content_text` and mark `transcript_status='complete'`.
-  - Segment runs append transcript snippets to `documents.assets` and store raw text in `transcription_requests.result_text` while leaving `content_text` untouched (`transcript_status='partial'`).
-- Ensure `transcription_requests` table records provider, timing, status, result text, and metadata.
-
 ## 4. Non-Functional Requirements
 
 - **Tech stack:** Python 3.11, Supabase Postgres, feedparser, psycopg, requests, optional AssemblyAI/OpenAI clients.
@@ -72,7 +75,7 @@
 
 ### Core tables
 - `sources`: id, name, type, feed_url, ingest_config, default_language, polling_interval, status timestamps.
-- `documents`: id, source_id, external_id, ingest_method, original_media_type, original_url, title, author, published_at, content_html, content_text, assets JSONB, transcript_status, ingest_status, provenance JSONB, timestamps.
+- `documents`: id, source_id, external_id, ingest_method, original_media_type, original_url, title, author, published_at, content_html, content_text, assets JSONB, transcript_status, ingest_status, provenance JSONB, `segment_status`, `segment_version`, `segment_updated_at`, timestamps.
 - `segments` (planned): id, document_id, text, start_offset, end_offset, status, version, labels JSONB, provenance JSONB, timestamps.
 - `notes` (planned): id, document_id, segment_id nullable, note_type, text, created_by, timestamps.
 - `transcription_requests`: id, document_id, provider, model, start_seconds, end_seconds, status, result_text, metadata JSONB, timestamps.
