@@ -25,6 +25,7 @@ ormsgpack==1.10.0
 packaging==25.0
 pathspec==0.12.1
 pluggy==1.6.0
+psycopg[binary,pool]
 pydantic==2.11.10
 pydantic_core==2.33.2
 Pygments==2.19.2
@@ -45,3 +46,9 @@ typing_extensions==4.15.0
 urllib3==2.5.0
 xxhash==3.6.0
 zstandard==0.25.0
+
+psycopg[binary]
+python-dotenv
+requests
+uvicorn
+fastapi

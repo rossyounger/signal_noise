@@ -1,108 +1,115 @@
-# signal_noise Quick Start
+### RESTART INSTRUCTIONS - FOR ROSS ONLY NOT PART OF README
 
-## Environment Setup
-1. Create the virtual environment: `python -m venv .venv`
-2. Activate it (macOS/Linux): `source .venv/bin/activate`
-3. Upgrade pip: `python -m pip install --upgrade pip`
-4. Install dependencies: `pip install -r requirements.txt`
+## virtualenv exists
+python3 -m venv .venv  
+source .venv/bin/activate 
+pip install -r requirements.txt 
 
-## Secrets
-- Copy `.env.example` to `.env`
-- Fill in real credentials (keep `.env` out of version control)
-- `python-dotenv` loads these variables at runtime
+## spawn extra terminals from project root
+open -a "Terminal" /Users/rossyounger/Code/signal_noise  # spawn extra terminals from project root
 
-## Tooling
-- Tests: `pytest`
-- Lint: `ruff check .`
-- Type check: `mypy .`
+## turn on four terminals using appscript
+  # terminal 1: FastAPI backend on localhost:8000
+  # terminal 2: ingestion worker
+  # terminal 3: transcription worker
+  # terminal 4: expose API to Retool cloud
 
-Source code lives in `src/`; place new agents under `src/agents/`. Tests belong in `tests/`. Update `.env.example` and `requirements.txt` whenever secrets or dependencies change.
+osascript <<'EOF'
+tell application "Terminal"
+    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && uvicorn src.api:app --reload"
+    delay 0.5
+    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && python3 -m scripts.run_ingestion_worker" in front window
+    delay 0.5
+    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && python3 -m scripts.run_transcription_worker" in front window
+    delay 0.5
+    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && ngrok http http://127.0.0.1:8000" in front window
+end tell
+EOF
 
-## Ingestion Scripts
+# Signal/Noise Pipeline
 
-- `python src/ingest_stratechery.py`
-  - Pulls the Stratechery article RSS feed.
-  - Requires `STRATECHERY_FEED_URL` and `SUPABASE_DB_URL` in your environment.
-  - Stores cleaned HTML/text in the `documents` table (one row per article).
+This project implements the Signal/Noise MVP pipeline: Ingest → Segment → Save → Review → Label → Search. The entire workflow is designed to be managed from a Retool user interface, powered by a Python FastAPI backend and asynchronous worker processes.
 
-- `python src/ingest_sharptech_podcast.py`
-  - Pulls Sharp Tech podcast episodes (audio metadata only).
-  - Requires `SHARPTECH_PODCAST_FEED_URL` (personalized token) and `SUPABASE_DB_URL`.
-  - Inserts each episode into `documents` with an `assets` entry containing the MP3 URL and marks `transcript_status='pending'`.
+## Architecture Overview
 
-Each script is safe to rerun; it upserts on `(source_id, external_id)`.
+The system is composed of three main parts:
 
-## Audio Transcription Flow
+1.  **FastAPI Backend (`src/api.py`):** A lightweight API server that provides endpoints for Retool to interact with. It handles requests for ingesting new sources, transcribing audio, and creating segments from text.
+2.  **Background Workers (`scripts/`):** Long-running tasks like fetching RSS feeds and running transcription models are handled by independent worker scripts. These scripts poll the database for jobs queued by the API, ensuring the UI remains fast and responsive.
+3.  **Retool UI:** The central control panel for the entire pipeline. From Retool, a user can trigger source ingestion, manage the transcription of audio files, and create precise segments from text documents.
 
-1. **List candidates**
-   ```bash
-   python scripts/list_audio_documents.py
-   ```
-   Copy the `id` (UUID) of the episode you care about.
+## Local Development Setup
 
-2. **Queue a transcription job**
-   ```bash
-   python scripts/queue_transcription.py <document_id> \
-     --provider openai \
-     --start 15:00 --end 25:00  # optional segment
-   ```
-   - `--provider` supports `openai` (Whisper) or `assembly` (AssemblyAI).
-   - `--model` is optional; defaults to `gpt-4o-mini-transcribe` for OpenAI.
-   - The command writes a row into `transcription_requests` and prints the request UUID.
+### 1. Environment and Dependencies
 
-3. **Run the transcription**
-   ```bash
-   python scripts/run_transcription.py <request_id>
-   ```
-   - Downloads the MP3, trims to the requested window if provided, calls the provider, and updates both `transcription_requests` and the `documents` row (`content_text`, `transcript_status`, `assets`).
-   - Requires API keys: `OPENAI_API_KEY` for Whisper, `ASSEMBLYAI_API_KEY` for AssemblyAI, and `ffmpeg` on PATH for segment trimming.
+1.  Create a Python virtual environment: `python3 -m venv .venv`
+2.  Activate it: `source .venv/bin/activate`
+3.  Install dependencies: `pip install -r requirements.txt`
 
-### After Transcription
+### 2. Secrets
 
-- Each request writes the raw transcript to `transcription_requests.result_text`. This is the fastest way to copy/paste the output.
-- A `transcript` asset is appended to the source document (`documents.assets`). The entry records provider, timestamps, and text.
-  - Full-length runs (no `--start/--end`) also update `documents.content_text` and mark `transcript_status='complete'`.
-  - Segment runs leave `content_text` untouched and set `transcript_status='partial'`, so you can queue multiple snippets for the same episode without overwriting anything.
-- Re-running the same document just adds more transcript assets; nothing is deleted automatically. Use Supabase Studio or downstream code to view/merge snippets as needed.
+1.  Copy the example environment file: `cp .env.example .env`
+2.  Fill in your credentials in the `.env` file. At a minimum, you need `SUPABASE_DB_URL` and `OPENAI_API_KEY`.
 
-The workflow is manual by design: copy the document ID from Supabase (or the list script), queue the job, run it. Later you can wire this into a cron job or UI without changing the commands.
+### 3. Database Migrations
 
-## Segment Generation Flow (FR3–FR5)
+Apply any new SQL migrations located in the `/sql` directory to your Supabase database. You can do this by pasting the SQL code into the Supabase SQL Editor.
 
-1. **Select documents**
-   - In Retool, select one or more `documents` rows and trigger a query that inserts into the `segment_generation_requests` table (one row per document). The same insert can be performed from the CLI:
-     ```bash
-     python scripts/queue_segments.py <doc_id_1> <doc_id_2>
-     ```
-     Optional flags: `--created-by` (your initials) and `--options '{"prefer_transcript": true}'`.
-     - The queue script skips anything already pending and sets `documents.segment_status='queued'` so you can filter for items awaiting processing.
+### 4. Running the System
 
-2. **Process the queue**
-   ```bash
-   python scripts/run_segmenter.py --once  # process a single pending request
-   python scripts/run_segmenter.py         # keep running, polling every 5s
-   ```
-   - Pulls the next `pending` request, finds the best text source (full article text or latest transcript asset), chunks it, optionally calls the LLM regrouping helper, and writes `segments` rows with `segment_status='proposed'`.
-   - Existing `proposed`/`final` segments for that document are marked `superseded` and the version number is incremented so edits stay auditable.
-   - The worker updates the parent `documents` row (`segment_status='running'` → `generated` or `failed`, plus `segment_version`/`segment_updated_at`).
+To run the full application for development, you will need to run **three separate processes in three separate terminals**. The recommended way to do this is using the integrated terminal within your code editor (like Cursor).
 
-3. **Review & edit**
-   - Retool surfaces the destination `segments` table. Analysts tweak `text`, `start_offset`, `end_offset`, add notes/labels, and promote status to `final` when satisfied.
-   - Retry any failed queue items by updating `segment_generation_requests.status` back to `pending` (the document row stays `queued` until processed again).
+**Terminal 1: API Server (with Auto-Reload)**
+This command starts the FastAPI server. The `--reload` flag automatically restarts the server whenever you save a code change, which is ideal for development.
+```bash
+uvicorn src.api:app --reload
+```
 
-### Worker options
+**Terminal 2: Ingestion Worker**
+This worker polls the database for new source ingestion jobs queued from the Retool UI. Run it as a module from the project root.
+```bash
+python3 -m scripts.run_ingestion_worker
+```
 
-`run_segmenter.py` supports:
-- `--document-id=<uuid>` to restrict processing to a single document.
-- `--poll-interval=<seconds>` to adjust the background loop cadence.
-- `--log-level=DEBUG` for verbose troubleshooting.
+**Terminal 3: Transcription Worker**
+This worker polls the database for new audio transcription jobs queued from the Retool UI. Run it as a module from the project root.
+```bash
+python3 -m scripts.run_transcription_worker
+```
 
-The worker expects `SUPABASE_DB_URL` (or `--dsn`) to point at the Supabase instance.
+Your backend is now fully running and ready to receive requests from your Retool application.
 
-### Table additions
+## Retool UI Workflow
 
-- `segments`: stores generated snippets (`document_id`, offsets, `segment_status`, `version`, `labels`, `provenance`).
-- `segment_generation_requests`: simple queue for pending segmentation actions (`document_id`, `created_by`, `options`, status/error state`).
-- `documents` now tracks snippet lifecycle with `segment_status`, `segment_version`, and `segment_updated_at`, making it easy to find unsegmented sources.
+The user-facing workflow is managed entirely within Retool, broken down into several pages.
 
-Retool should expose both tables so you can: pick documents to queue, monitor status, and edit the resulting snippets without leaving the UI.
+### 1. Sources Page
+
+-   **Purpose:** Trigger the ingestion of new content from RSS feeds.
+-   **Actions:**
+    1.  A table displays all available sources from the `sources` table.
+    2.  The user selects one or more sources.
+    3.  Clicking "Refresh Selected Sources" sends a request to the API, which queues jobs for the ingestion worker to process.
+
+### 2. Documents Page
+
+-   **Purpose:** View all ingested content and initiate segmentation or transcription.
+-   **Actions:**
+    1.  A table displays all articles and podcasts from the `documents` table.
+    2.  From here, the user can select documents and navigate to one of two specialized workbenches.
+
+### 3. Transcription Workbench (for Audio)
+
+-   **Purpose:** Create text segments from audio files.
+-   **Actions:**
+    1.  The user defines a time range (start and end seconds) for a specific audio document.
+    2.  Clicking "Transcribe" queues a job for the transcription worker.
+    3.  The worker processes the audio segment and saves the resulting text as a new "proposed" segment in the `segments` table.
+
+### 4. Segmentation Workbench (for Text)
+
+-   **Purpose:** Create precise text segments from articles.
+-   **Actions:**
+    1.  The full text of the selected document is displayed in an editor.
+    2.  The user highlights a specific passage of text.
+    3.  Clicking "Create Segment from Selection" instantly saves the highlighted text and its position as a new row in the `segments` table.

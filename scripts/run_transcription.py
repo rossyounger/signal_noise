@@ -69,8 +69,15 @@ def download_audio(url: str, destination: Path) -> None:
 
 
 def trim_audio(source: Path, dest: Path, start: float | None, end: float | None) -> None:
+    """Trim or re-encode an audio clip to the requested window.
+
+    We re-encode instead of stream-copying to avoid edge cases where
+    timestamp discontinuities yield files OpenAI rejects as corrupted.
+    """
+
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is required for segment transcription")
+
     cmd = [
         "ffmpeg",
         "-y",
@@ -83,10 +90,14 @@ def trim_audio(source: Path, dest: Path, start: float | None, end: float | None)
     cmd.extend(["-i", str(source)])
     if start is not None and end is not None:
         duration = max(end - start, 0)
+        if duration <= 0:
+            raise SystemExit("end_seconds must be greater than start_seconds")
         cmd.extend(["-t", str(duration)])
     elif end is not None:
+        if end <= 0:
+            raise SystemExit("end_seconds must be greater than 0")
         cmd.extend(["-t", str(end)])
-    cmd.extend(["-c", "copy", str(dest)])
+    cmd.extend(["-c:a", "libmp3lame", "-b:a", "128k", str(dest)])
     subprocess.run(cmd, check=True)
 
 
@@ -163,50 +174,33 @@ def update_request(conn: psycopg.Connection, request_id: str, status: str, text:
         conn.commit()
 
 
-def update_document(conn: psycopg.Connection, document_id: str, text: str, provider: str, start: float | None, end: float | None) -> None:
+def create_segment_from_transcript(
+    conn: psycopg.Connection,
+    document_id: str,
+    text: str,
+    provider: str,
+    request_id: str,
+    start: float | None,
+    end: float | None,
+) -> None:
+    """Insert a new segment from a transcription result."""
     from psycopg.types.json import Json
 
-    start_val = float(start) if start is not None else None
-    end_val = float(end) if end is not None else None
+    provenance = {
+        "source": "transcription",
+        "request_id": str(request_id),
+        "provider": provider,
+    }
+    start_offset = int(start) if start is not None else None
+    end_offset = int(end) if end is not None else None
 
     with conn.cursor() as cur:
-        cur.execute("SELECT assets FROM documents WHERE id = %s", (document_id,))
-        row = cur.fetchone()
-        if not row:
-            raise SystemExit("Document not found during update")
-        assets = row[0] or []
-        if not isinstance(assets, list):
-            assets = []
-        assets.append(
-            {
-                "type": "transcript",
-                "source": provider,
-                "created_at": datetime.utcnow().isoformat(),
-                "start_seconds": start_val,
-                "end_seconds": end_val,
-                "text": text,
-            }
-        )
         cur.execute(
             """
-            UPDATE documents
-            SET content_text = CASE WHEN %s IS NULL AND %s IS NULL THEN %s ELSE content_text END,
-                transcript_status = CASE WHEN %s IS NULL AND %s IS NULL THEN 'complete' ELSE 'partial' END,
-                transcript_source = %s,
-                assets = %s,
-                updated_at = now()
-            WHERE id = %s
+            INSERT INTO segments (document_id, text, start_offset, end_offset, provenance, segment_status)
+            VALUES (%s, %s, %s, %s, %s, 'proposed')
             """,
-            (
-                start_val,
-                end_val,
-                text,
-                start_val,
-                end_val,
-                provider,
-                Json(assets),
-                document_id,
-            ),
+            (document_id, text, start_offset, end_offset, Json(provenance)),
         )
         conn.commit()
 
@@ -246,11 +240,12 @@ def run_request(request_id: str) -> None:
 
             transcript_text = adapter(segment_path, model)
 
-        update_document(
+        create_segment_from_transcript(
             conn,
             document_id=request["document_id"],
             text=transcript_text,
             provider=f"{provider}:{model or ''}",
+            request_id=request_id,
             start=start,
             end=end,
         )

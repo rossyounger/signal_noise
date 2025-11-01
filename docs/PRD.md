@@ -19,26 +19,27 @@
 - Store one row per source artifact in `documents` with raw HTML, cleaned text, provenance metadata, and `assets` JSON (audio URLs, transcripts, etc.).
 - Deduplicate via `(source_id, external_id)`; track ingest status (`pending`, `ok`, `failed`).
 - Maintain `sources` table for feed metadata (type, URL, polling cadence).
-- Manual/CLI scripts already exist (`ingest_stratechery.py`, `ingest_sharptech_podcast.py`).
+- **New Workflow:** Ingestion is triggered from a Retool UI. A button press calls a new FastAPI endpoint, which queues requests in an `ingestion_requests` table. A background worker (`scripts/run_ingestion_worker.py`) processes this queue.
 
 ### FR2 – On-Demand Transcription
-- Allow human-triggered transcription for any audio document or segment window.
-- CLI workflow:
-  1. List audio documents (`scripts/list_audio_documents.py`).
-  2. Queue transcription with provider + optional start/end (`scripts/queue_transcription.py`).
-  3. Process request via provider adapter (`scripts/run_transcription.py`).
+- Allow human-triggered transcription for any audio document or segment window from within Retool.
+- **New Workflow:**
+  1. User selects an audio document in Retool and defines a start/end time in the "Transcription Workbench."
+  2. A "Transcribe" button calls a FastAPI endpoint (`/transcription-requests`), creating a job in the `transcription_requests` table.
+  3. A background worker (`scripts/run_transcription_worker.py`) processes the queue.
+  4. The output is saved directly as a new row in the `segments` table with `segment_status='proposed'`.
 - Providers supported: OpenAI Whisper (<= 23 min) and AssemblyAI (full-length).
-- Transcription results:
-  - Full runs update `documents.content_text`, append transcript asset, mark `transcript_status='complete'`.
-  - Segment runs append transcript snippets to `documents.assets`, store raw text in `transcription_requests.result_text`, set `transcript_status='partial'`.
-- `transcription_requests` table records provider, model, timestamps, status, raw text, metadata. Future automation can poll this queue.
+- The `transcription_requests` table tracks job status.
 
 ### FR3 – Segment (Snippets Generator)
-- Split long-form content into topical snippets. For text, plan pre-chunking + LLM regrouping; for audio, run on transcripts once available.
-- Each snippet stores `document_id`, offsets (`start_char`, `end_char` for text; timestamps for audio), and raw text.
-- Ensure segments can be regenerated to maintain provenance.
-- Segment selection flows through Retool: analysts pick `documents` rows and enqueue a request in `segment_generation_requests`; a worker script processes the queue and writes rows to `segments` with `segment_status='proposed'`.
-- Source documents track snippet lifecycle via `documents.segment_status` (`not_started`, `queued`, `running`, `generated`, `failed`) and `segment_version` so analysts can filter for items that still need segmentation.
+- Split long-form content into topical snippets.
+- **New Workflow for Text:**
+  1. User selects a text document in Retool and opens it in the "Segmentation Workbench."
+  2. The UI fetches the full document text via a new FastAPI endpoint.
+  3. User highlights a passage of text in the Retool UI.
+  4. A "Create Segment" button calls a FastAPI endpoint (`/segments`) with the selected text and its character offsets.
+  5. The segment is immediately saved to the `segments` table.
+- **New Workflow for Audio:** Transcription (FR2) now creates segments directly. The original automated segmentation flow (`run_segmenter.py`) is deferred.
 
 ### FR4 – Save Segments
 - Persist snippets in a `segments` table with:
@@ -71,7 +72,14 @@
 - **Performance:** MVP tolerates manual runs; RSS ingestion should complete within minutes, transcription limited by provider throughput.
 - **Security:** Keep API keys in `.env`; never commit secrets. Tokenized feed URLs treated as secrets.
 
-## 5. Data Model Summary
+## 5. Architecture & Tooling
+- **API Server:** A new FastAPI application (`src/api.py`) provides endpoints for Retool to interact with the database. It handles queuing for ingestion and transcription, and direct creation of manual segments.
+- **Background Workers:** Long-running tasks are handled by worker scripts that poll the database:
+  - `scripts/run_ingestion_worker.py` for processing `ingestion_requests`.
+  - `scripts/run_transcription_worker.py` for processing `transcription_requests`.
+- **Retool UI:** The primary user interface for triggering ingestion, transcribing audio, and creating segments from text.
+
+## 6. Data Model Summary
 
 ### Core tables
 - `sources`: id, name, type, feed_url, ingest_config, default_language, polling_interval, status timestamps.
@@ -79,6 +87,7 @@
 - `segments` (planned): id, document_id, text, start_offset, end_offset, status, version, labels JSONB, provenance JSONB, timestamps.
 - `notes` (planned): id, document_id, segment_id nullable, note_type, text, created_by, timestamps.
 - `transcription_requests`: id, document_id, provider, model, start_seconds, end_seconds, status, result_text, metadata JSONB, timestamps.
+- `ingestion_requests`: id, source_id, status, error_message, timestamps.
 
 ### Assets JSON schema
 - Audio asset example:
@@ -90,55 +99,13 @@
   {"type": "transcript", "source": "openai:gpt-4o-mini-transcribe", "start_seconds": 2321.0, "end_seconds": 2940.0, "text": "…"}
   ```
 
-## 6. CLI & Developer Tooling
-
-- `python src/ingest_stratechery.py` – article ingestion.
-- `python src/ingest_sharptech_podcast.py` – podcast ingestion (audio metadata).
-- `python scripts/list_audio_documents.py` – list documents queued for transcription.
-- `python scripts/queue_transcription.py <doc_id> [--provider|--start|--end]` – enqueue transcription.
-- `python scripts/run_transcription.py <request_id>` – process queued transcription.
-- `.env` requires: `SUPABASE_DB_URL`, `STRATECHERY_FEED_URL`, `SHARPTECH_PODCAST_FEED_URL`, `OPENAI_API_KEY`, optional `ASSEMBLYAI_API_KEY`.
-- Retool setup: connect to Supabase, expose documents/segments/requests tables.
+## 8. CLI & Developer Tooling (Updated)
+- `python src/api.py` – Runs the FastAPI server.
+- `python scripts/run_ingestion_worker.py` – Runs the ingestion background worker.
+- `python scripts/run_transcription_worker.py` – Runs the transcription background worker.
+- `.env` requires: `SUPABASE_DB_URL`, `OPENAI_API_KEY`, optional `ASSEMBLYAI_API_KEY`. Feed URLs are now managed in the `sources` table.
+- Retool setup: connect to Supabase, build UI to interact with the new API endpoints.
 
 ## 7. Next Steps
 
-1. Implement `segments` table & generation pipeline.
-2. Build Retool review app with transcription queue control.
-3. Add AI labeling helpers and storage.
-4. Implement basic search (SQL) and plan indexing for later.
-5. Consider background worker (cron) to process queued transcriptions automatically.
-
----
-
-# Cursor Rules for Signal/Noise
-
-```
-# Project intent
-Implement the Signal/Noise MVP pipeline: Ingest → Segment → Save → Review → Label → Search, with manual transcription support.
-
-# Folder map
-/src              # ingestion modules, future segmentation code
-/scripts          # CLI utilities (ingest, transcription)
-/sql              # database migrations (/sql/00x_*.sql)
-/docs/PRD.md      # product specification (single source of truth)
-/tests            # pytest suites
-/configs          # Retool or environment config (if any)
-
-# Canonical references
-docs/PRD.md defines requirements and data model expectations.
-Segments must capture: document_id, start/end offsets, status, version, labels JSONB, provenance.
-Transcriptions flow through scripts/ queue + run; assets JSON structure must remain consistent.
-
-# Coding constraints
-Python 3.11
-Supabase Postgres backend
-feedparser / requests / psycopg for ingestion, optional AssemblyAI/OpenAI clients
-Lint with ruff, tests with pytest
-Future FastAPI service should read from existing models.
-
-# Agent guidance
-Align all changes with docs/PRD.md.
-Preserve provenance; no raw blob duplication.
-Prefer explicit scripts/migrations over ad-hoc SQL.
-Document new CLI usage in README when functionality changes.
-```
+1. Implement `
