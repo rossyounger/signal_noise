@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS transcription_requests (
     model TEXT,
     start_seconds NUMERIC,
     end_seconds NUMERIC,
-    status TEXT NOT NULL DEFAULT 'queued',
+    status TEXT NOT NULL DEFAULT 'pending',
     result_text TEXT,
     metadata JSONB DEFAULT '{}'::JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

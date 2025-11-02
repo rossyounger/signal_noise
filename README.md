@@ -14,17 +14,10 @@ open -a "Terminal" /Users/rossyounger/Code/signal_noise  # spawn extra terminals
   # terminal 3: transcription worker
   # terminal 4: expose API to Retool cloud
 
-osascript <<'EOF'
-tell application "Terminal"
-    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && uvicorn src.api:app --reload"
-    delay 0.5
-    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && python3 -m scripts.run_ingestion_worker" in front window
-    delay 0.5
-    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && python3 -m scripts.run_transcription_worker" in front window
-    delay 0.5
-    do script "cd /Users/rossyounger/Code/signal_noise && source .venv/bin/activate && ngrok http http://127.0.0.1:8000" in front window
-end tell
-EOF
+uvicorn src.api:app --reload
+python -m scripts.run_ingestion_worker
+python -m scripts.run_transcription_worker
+ngrok http http://127.0.0.1:8000
 
 # Signal/Noise Pipeline
 
@@ -49,7 +42,7 @@ The system is composed of three main parts:
 ### 2. Secrets
 
 1.  Copy the example environment file: `cp .env.example .env`
-2.  Fill in your credentials in the `.env` file. At a minimum, you need `SUPABASE_DB_URL` and `OPENAI_API_KEY`.
+2.  Fill in your credentials in the `.env` file. At a minimum, you need `SUPABASE_DB_URL` and `OPENAI_API_KEY`. If you plan to use AssemblyAI for transcription, also provide `ASSEMBLYAI_API_KEY`.
 
 ### 3. Database Migrations
 

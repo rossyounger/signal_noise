@@ -55,7 +55,7 @@ def main() -> None:
     parser.add_argument(
         "--provider",
         default="openai",
-        choices=["openai", "assembly"],
+        choices=["openai", "assemblyai"],
         help="Transcription provider",
     )
     parser.add_argument("--model", help="Model identifier for the provider")
