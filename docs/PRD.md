@@ -29,7 +29,7 @@
   3. A background worker (`scripts/run_transcription_worker.py`) processes the queue.
   4. The output is saved directly as a new row in the `segments` table with `segment_status='proposed'`.
 - Providers supported: OpenAI Whisper (<= 23 min) and AssemblyAI (full-length).
-- The `transcription_requests` table tracks job status.
+- The `transcription_requests` table tracks job status. Requests flow from `pending` → `in_progress` → `completed` or `failed`, and failures record a short error summary in `metadata->>'error'`.
 
 ### FR3 – Segment (Snippets Generator)
 - Split long-form content into topical snippets.
@@ -48,7 +48,7 @@
   - `version` integer, `labels` JSONB (empty by default)
   - Provenance metadata (e.g., audio timestamps, HTML path)
 - Support updates when segments are refined or superseded.
-- Segment generation worker auto-supersedes existing `proposed`/`final` rows before inserting a new version, and updates `documents.segment_status`/`segment_version` to keep the source record of truth.
+- Segment updates should refresh `documents.segment_status` via triggers so the source record reflects the newest segment state.
 
 ### FR5 – Review (Retool Builder Console)
 - Expose Supabase tables via Retool / lightweight UI immediately after save.
@@ -83,11 +83,11 @@
 
 ### Core tables
 - `sources`: id, name, type, feed_url, ingest_config, default_language, polling_interval, status timestamps.
-- `documents`: id, source_id, external_id, ingest_method, original_media_type, original_url, title, author, published_at, content_html, content_text, assets JSONB, transcript_status, ingest_status, provenance JSONB, `segment_status`, `segment_version`, `segment_updated_at`, timestamps.
-- `segments` (planned): id, document_id, text, start_offset, end_offset, status, version, labels JSONB, provenance JSONB, timestamps.
+- `documents`: id, source_id, external_id, ingest_method, original_media_type, original_url, title, author, published_at, content_html, content_text, assets JSONB, transcript_status, ingest_status, provenance JSONB, `segment_status`, timestamps.
+- `segments`: id, document_id, text, start_offset, end_offset, segment_status (`proposed`/`final`/`superseded`), version, labels JSONB, provenance JSONB, timestamps.
 - `notes` (planned): id, document_id, segment_id nullable, note_type, text, created_by, timestamps.
-- `transcription_requests`: id, document_id, provider, model, start_seconds, end_seconds, status, result_text, metadata JSONB, timestamps.
-- `ingestion_requests`: id, source_id, status, error_message, timestamps.
+- `transcription_requests`: id, document_id, provider (`openai`/`assemblyai`), model, start_seconds, end_seconds, status (`pending`/`in_progress`/`completed`/`failed`), result_text, metadata JSONB, timestamps.
+- `ingestion_requests`: id, source_id, status (`queued`/`in_progress`/`completed`/`failed`), error_message, timestamps.
 
 ### Assets JSON schema
 - Audio asset example:
@@ -99,13 +99,16 @@
   {"type": "transcript", "source": "openai:gpt-4o-mini-transcribe", "start_seconds": 2321.0, "end_seconds": 2940.0, "text": "…"}
   ```
 
-## 8. CLI & Developer Tooling (Updated)
-- `python src/api.py` – Runs the FastAPI server.
-- `python scripts/run_ingestion_worker.py` – Runs the ingestion background worker.
-- `python scripts/run_transcription_worker.py` – Runs the transcription background worker.
-- `.env` requires: `SUPABASE_DB_URL`, `OPENAI_API_KEY`, optional `ASSEMBLYAI_API_KEY`. Feed URLs are now managed in the `sources` table.
-- Retool setup: connect to Supabase, build UI to interact with the new API endpoints.
+## 7. Developer Runbook
+- Apply SQL migrations in `/sql` to Supabase in order.
+- Populate `.env` with at least `SUPABASE_DB_URL`, `OPENAI_API_KEY`, and optionally `ASSEMBLYAI_API_KEY` for long-form transcription.
+- Run the FastAPI server: `uvicorn src.api:app --reload`.
+- Run background workers in separate terminals:
+  - `python -m scripts.run_ingestion_worker`
+  - `python -m scripts.run_transcription_worker`
+- Retool connects to these endpoints to queue ingestion/transcription and to review segments. No manual CLI actions are needed beyond the workers above.
 
-## 7. Next Steps
-
-1. Implement `
+## 8. Future Enhancements
+1. Improve document-level `segment_status` trigger logic to reflect true aggregate state.
+2. Revisit automated segmentation for long-form text and audio regrouping.
+3. Expand Retool review tools (bulk labeling, search filters, retry controls).

@@ -9,6 +9,10 @@ from src.ingest_sharptech_podcast import parse_feed as parse_podcast_feed
 from src.ingest_sharptech_podcast import upsert_documents as upsert_podcast_documents
 from src.ingest_stratechery import parse_feed as parse_article_feed
 from src.ingest_stratechery import upsert_documents as upsert_article_documents
+from src.ingest_podcast_transcript import parse_feed as parse_podcast_transcript_feed
+from src.ingest_podcast_transcript import (
+    upsert_documents as upsert_podcast_transcript_documents,
+)
 
 
 def get_source(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
@@ -28,18 +32,26 @@ def run_source_ingestion(db_url: str, source_id: str) -> None:
         source = get_source(conn, source_id)
         source_type = source.get("type")
         feed_url = source.get("feed_url")
+        ingest_config = source.get("ingest_config") or {}
 
         if not feed_url:
             raise ValueError(f"Source {source_id} has no feed_url.")
 
         print(f"Ingesting {source['name']} ({source_type})...")
 
-        if source_type == "rss":  # <-- THE FIX IS HERE
+        if source_type == "rss":
             entries = list(parse_article_feed(feed_url))
+            print(f"Found {len(entries)} article entries to ingest.")
             upsert_article_documents(conn, source_id, entries)
         elif source_type == "podcast":
             entries = list(parse_podcast_feed(feed_url))
+            print(f"Found {len(entries)} podcast entries to ingest.")
             upsert_podcast_documents(conn, source_id, entries)
+        elif source_type == "podcast_transcript":
+            months = ingest_config.get("months_to_ingest", 6)
+            entries = list(parse_podcast_transcript_feed(feed_url, months=months))
+            print(f"Found {len(entries)} podcast transcript entries to ingest.")
+            upsert_podcast_transcript_documents(conn, source_id, entries)
         else:
             raise NotImplementedError(f"No ingestion logic for source type: {source_type}")
 
