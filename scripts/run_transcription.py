@@ -193,7 +193,7 @@ def create_segment_from_transcript(
                 provenance,
                 segment_status
             )
-            VALUES (%s, %s, %s, %s, %s, 'proposed')
+            VALUES (%s, %s, %s, %s, %s, 'raw text')
             """,
             (document_id, text, start_offset, end_offset, Json(provenance)),
         )
