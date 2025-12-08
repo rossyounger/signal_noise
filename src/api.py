@@ -90,7 +90,10 @@ class TopicHomeView(BaseModel):
     latest_description: str | None
     latest_user_hypothesis: str | None
     last_updated_at: datetime
-    segment_count: int
+    segment_id: str | None
+    segment_text_preview: str | None
+    document_id: str | None
+    document_title: str | None
 
 class GeneratePovRequest(BaseModel):
     segment_id: str
@@ -133,12 +136,21 @@ class SuggestTopicsResponse(BaseModel):
     suggestions: List[TopicSuggestion]
 
 class TopicCreate(BaseModel):
-    name: str
+    name: str | None = None  # Optional - name will be set when topic is first saved to history
     description: str | None = None
     user_hypothesis: str | None = None
 
 class TopicResponse(BaseModel):
     topic_id: str
+
+class SegmentTopic(BaseModel):
+    """Represents a topic from topics_history for a specific segment."""
+    topic_id: str
+    name: str
+    description: str | None
+    user_hypothesis: str | None
+    summary_text: str | None
+    created_at: datetime
 
 # --- Documents & Sources Models ---
 
@@ -247,6 +259,7 @@ class Segment(BaseModel):
     text: str
     created_at: datetime
     published_at: datetime | None = None
+    topic_count: int = 0
 
 
 class DocumentContent(BaseModel):
@@ -309,7 +322,7 @@ async def get_segment_for_workbench(segment_id: str) -> SegmentWorkbenchContent:
 
 @app.get("/segments")
 async def list_segments() -> list[Segment]:
-    """List all segments, joining with documents to get metadata."""
+    """List all segments, joining with documents to get metadata and topic counts."""
     pool = _require_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -322,9 +335,17 @@ async def list_segments() -> list[Segment]:
                     d.author,
                     s.text,
                     s.created_at,
-                    d.published_at
+                    d.published_at,
+                    COALESCE(topic_counts.topic_count, 0) as topic_count
                 FROM segments s
                 JOIN documents d ON s.document_id = d.id
+                LEFT JOIN (
+                    SELECT 
+                        segment_id,
+                        COUNT(DISTINCT topic_id) as topic_count
+                    FROM topics_history
+                    GROUP BY segment_id
+                ) topic_counts ON s.id = topic_counts.segment_id
                 ORDER BY s.created_at DESC
                 """
             )
@@ -506,12 +527,43 @@ async def create_manual_segment(req: SegmentCreate) -> SegmentResponse:
 
 # --- Topic & Analysis Workflow (New Architecture) ---
 
+@app.get("/segments/{segment_id}/topics", response_model=List[SegmentTopic])
+async def get_segment_topics(segment_id: str):
+    """
+    Get the latest topics from topics_history that are linked to a specific segment.
+    Returns only the most recent entry per topic_id for this segment.
+    """
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT ON (topic_id)
+                    topic_id,
+                    name,
+                    description,
+                    user_hypothesis,
+                    summary_text,
+                    created_at
+                FROM topics_history
+                WHERE segment_id = %s
+                ORDER BY topic_id, created_at DESC
+                """,
+                (segment_id,)
+            )
+            rows = await cur.fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d['topic_id'] = str(d['topic_id'])  # Convert UUID to string
+        results.append(SegmentTopic(**d))
+    return results
+
 @app.get("/topics", response_model=List[TopicHomeView])
 async def list_topics_home_view():
     """
     Lists the latest version of each topic for the main "Home POV".
-    This is a more complex query that finds the most recent entry in topics_history
-    for each unique topic_id.
+    Queries only from topics_history - all topic metadata comes from the most recent history entry.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
@@ -523,25 +575,21 @@ async def list_topics_home_view():
                         DISTINCT ON (topic_id) *
                     FROM topics_history
                     ORDER BY topic_id, created_at DESC
-                ),
-                topic_stats AS (
-                    SELECT
-                        topic_id,
-                        count(id) as segment_count
-                    FROM topics_history
-                    GROUP BY topic_id
                 )
                 SELECT
-                    t.id as topic_id,
-                    t.name as latest_name,
+                    lh.topic_id,
+                    lh.name as latest_name,
                     lh.description as latest_description,
                     lh.user_hypothesis as latest_user_hypothesis,
-                    COALESCE(lh.created_at, t.created_at) as last_updated_at,
-                    COALESCE(ts.segment_count, 0) as segment_count
-                FROM topic_ids t
-                LEFT JOIN latest_history lh ON t.id = lh.topic_id
-                LEFT JOIN topic_stats ts ON t.id = ts.topic_id
-                ORDER BY t.name;
+                    lh.created_at as last_updated_at,
+                    lh.segment_id,
+                    LEFT(s.text, 200) as segment_text_preview,
+                    d.id as document_id,
+                    d.title as document_title
+                FROM latest_history lh
+                LEFT JOIN segments s ON lh.segment_id = s.id
+                LEFT JOIN documents d ON s.document_id = d.id
+                ORDER BY lh.created_at DESC;
                 """
             )
             rows = await cur.fetchall()
@@ -549,6 +597,10 @@ async def list_topics_home_view():
     for r in rows:
         d = dict(r)
         d['topic_id'] = str(d['topic_id'])  # Convert UUID to string
+        if d.get('segment_id'):
+            d['segment_id'] = str(d['segment_id'])
+        if d.get('document_id'):
+            d['document_id'] = str(d['document_id'])
         results.append(TopicHomeView(**d))
     return results
 
@@ -556,24 +608,20 @@ async def list_topics_home_view():
 async def create_topic(req: TopicCreate) -> TopicResponse:
     """
     Creates a new topic manually.
+    Creates a topic_id without requiring a name - the name will be set when
+    the topic is first saved to topics_history with a segment.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            # 1. Create the evergreen topic ID
-            try:
-                await cur.execute(
-                    "INSERT INTO topic_ids (name) VALUES (%s) RETURNING id",
-                    (req.name,)
-                )
-                row = await cur.fetchone()
-                if not row:
-                    raise HTTPException(status_code=500, detail="Failed to create topic ID")
-                topic_id = str(row["id"])
-            except Exception as e:
-                if "unique constraint" in str(e).lower():
-                    raise HTTPException(status_code=409, detail="Topic with this name already exists.")
-                raise e
+            # Create the evergreen topic ID (no name column anymore)
+            await cur.execute(
+                "INSERT INTO topic_ids DEFAULT VALUES RETURNING id"
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=500, detail="Failed to create topic ID")
+            topic_id = str(row["id"])
                 
     return TopicResponse(topic_id=topic_id)
 
@@ -673,21 +721,15 @@ async def save_segment_topics_history(segment_id: str, req: SaveTopicsHistoryReq
             for topic_payload in req.topics:
                 topic_id = topic_payload.topic_id
                 
-                # If topic_id is null, it's a new topic. Create or find existing by name.
+                # If topic_id is null, it's a new topic. Create a new topic_id (no name-based lookup).
                 if not topic_id:
                     async with conn.cursor(row_factory=dict_row) as cur:
-                        # Use INSERT ... ON CONFLICT to handle existing topics
                         await cur.execute(
-                            """
-                            INSERT INTO topic_ids (name) VALUES (%s)
-                            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-                            RETURNING id;
-                            """,
-                            (topic_payload.name,)
+                            "INSERT INTO topic_ids DEFAULT VALUES RETURNING id"
                         )
                         row = await cur.fetchone()
                         if not row:
-                            raise HTTPException(status_code=500, detail="Failed to create or find topic ID.")
+                            raise HTTPException(status_code=500, detail="Failed to create topic ID.")
                         topic_id = str(row["id"])
 
                 # Now, insert the new entry into the history log.

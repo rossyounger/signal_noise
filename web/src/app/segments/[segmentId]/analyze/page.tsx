@@ -19,6 +19,15 @@ type TopicSuggestion = {
   summary_text?: string;
 };
 
+type SegmentTopic = {
+  topic_id: string;
+  name: string;
+  description: string | null;
+  user_hypothesis: string | null;
+  summary_text: string | null;
+  created_at: string;
+};
+
 // Represents a topic being edited, including its AI-generated POV
 type StagedChange = TopicSuggestion & {
   pov_summary?: string;
@@ -36,11 +45,13 @@ export default function SegmentAnalyzePage() {
 
   // --- State Management ---
   const [workbenchData, setWorkbenchData] = useState<SegmentWorkbenchContent | null>(null);
-  const [initialTopics, setInitialTopics] = useState<TopicSuggestion[]>([]);
+  const [existingTopics, setExistingTopics] = useState<SegmentTopic[]>([]);
+  const [aiSuggestions, setAiSuggestions] = useState<TopicSuggestion[]>([]);
   const [stagedChanges, setStagedChanges] = useState<Record<string, StagedChange>>({});
   const [activeTopicKey, setActiveTopicKey] = useState<string | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const [isGeneratingPov, setIsGeneratingPov] = useState(false);
   const [isCheckingHypothesis, setIsCheckingHypothesis] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -53,6 +64,47 @@ export default function SegmentAnalyzePage() {
     return stagedChanges[activeTopicKey];
   }, [activeTopicKey, stagedChanges]);
 
+  // Combine existing topics and AI suggestions for display, deduplicating by topic_id
+  const allTopics = useMemo(() => {
+    const existing = existingTopics.map(t => ({
+      topic_id: t.topic_id,
+      name: t.name,
+      source: 'existing' as const,
+      description: t.description || undefined,
+      user_hypothesis: t.user_hypothesis || undefined,
+      summary_text: t.summary_text || undefined,
+    }));
+    
+    // Create a map to deduplicate - prefer existing topics over AI suggestions
+    // Use the same key generation logic as in the table rendering
+    const topicMap = new Map<string, TopicSuggestion>();
+    
+    // First, add all existing topics
+    existing.forEach(topic => {
+      const key = topic.topic_id; // existing topics always have topic_id
+      topicMap.set(key, topic);
+    });
+    
+    // Then add AI suggestions, but skip if topic_id already exists (existing takes precedence)
+    aiSuggestions.forEach(topic => {
+      const key = topic.topic_id || `new-${topic.name}`;
+      // Only add if it's a new topic (no topic_id) or if we don't already have this topic_id
+      if (!topic.topic_id) {
+        // New topic - use the generated key
+        if (!topicMap.has(key)) {
+          topicMap.set(key, topic);
+        }
+      } else {
+        // Existing topic_id - only add if not already in map (existing topics take precedence)
+        if (!topicMap.has(topic.topic_id)) {
+          topicMap.set(topic.topic_id, topic);
+        }
+      }
+    });
+    
+    return Array.from(topicMap.values());
+  }, [existingTopics, aiSuggestions]);
+
   // Count topics marked for save
   const topicsToSaveCount = useMemo(() => {
     return Object.values(stagedChanges).filter(t => t.markedForSave).length;
@@ -63,19 +115,31 @@ export default function SegmentAnalyzePage() {
     if (!segmentId) return;
     const fetchData = async () => {
       try {
+        // Fetch segment data
         const segmentRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}`);
         if (!segmentRes.ok) throw new Error('Failed to fetch segment details.');
         const segmentData: SegmentWorkbenchContent = await segmentRes.json();
         setWorkbenchData(segmentData);
 
-        const suggestRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics:suggest`, { method: 'POST' });
-        if (!suggestRes.ok) throw new Error('Failed to fetch topic suggestions.');
-        const suggestData = await suggestRes.json();
-        
-        setInitialTopics(suggestData.suggestions);
-        const initialStagedChanges = suggestData.suggestions.reduce((acc: Record<string, StagedChange>, topic: TopicSuggestion) => {
-          const key = topic.topic_id || `new-${topic.name}`;
-          acc[key] = { ...topic, isDirty: false, markedForSave: false };
+        // Fetch existing topics from topics_history (no AI call)
+        const existingRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics`);
+        if (!existingRes.ok) throw new Error('Failed to fetch existing topics.');
+        const existingData: SegmentTopic[] = await existingRes.json();
+        setExistingTopics(existingData);
+
+        // Initialize staged changes for existing topics
+        const initialStagedChanges = existingData.reduce((acc: Record<string, StagedChange>, topic: SegmentTopic) => {
+          const key = topic.topic_id;
+          acc[key] = {
+            topic_id: topic.topic_id,
+            name: topic.name,
+            source: 'existing',
+            description: topic.description || undefined,
+            user_hypothesis: topic.user_hypothesis || undefined,
+            summary_text: topic.summary_text || undefined,
+            isDirty: false,
+            markedForSave: false,
+          };
           return acc;
         }, {});
         setStagedChanges(initialStagedChanges);
@@ -88,10 +152,71 @@ export default function SegmentAnalyzePage() {
     fetchData();
   }, [segmentId]);
 
+  // Handler for generating AI suggestions
+  const handleGenerateSuggestions = async () => {
+    if (!segmentId) return;
+    setIsGeneratingSuggestions(true);
+    try {
+      const suggestRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics:suggest`, { method: 'POST' });
+      if (!suggestRes.ok) throw new Error('Failed to fetch topic suggestions.');
+      const suggestData = await suggestRes.json();
+      
+      setAiSuggestions(suggestData.suggestions);
+      
+      // Add AI suggestions to staged changes
+      setStagedChanges(prev => {
+        const updated = { ...prev };
+        suggestData.suggestions.forEach((topic: TopicSuggestion) => {
+          const key = topic.topic_id || `new-${topic.name}`;
+          if (!updated[key]) {
+            updated[key] = { ...topic, isDirty: false, markedForSave: false };
+          }
+        });
+        return updated;
+      });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'An unknown error occurred');
+    } finally {
+      setIsGeneratingSuggestions(false);
+    }
+  };
+
   // --- Event Handlers ---
-  const handleTopicSelect = (topic: TopicSuggestion) => {
-    const key = topic.topic_id || `new-${topic.name}`;
-    setActiveTopicKey(key);
+  const handleCheckboxChange = (key: string, checked: boolean) => {
+    if (checked) {
+      // Only one checkbox can be checked at a time - uncheck others first
+      // Unmark previous selection if any
+      if (activeTopicKey && activeTopicKey !== key) {
+        setStagedChanges(prev => ({
+          ...prev,
+          [activeTopicKey]: { 
+            ...prev[activeTopicKey], 
+            markedForSave: false 
+          },
+        }));
+      }
+      // Set new active topic
+      setActiveTopicKey(key);
+      // Mark for save when checking
+      setStagedChanges(prev => ({
+        ...prev,
+        [key]: { 
+          ...prev[key], 
+          markedForSave: true 
+        },
+      }));
+    } else {
+      // Unchecking clears selection and hides edit form
+      setActiveTopicKey(null);
+      // Unmark for save when unchecking
+      setStagedChanges(prev => ({
+        ...prev,
+        [key]: { 
+          ...prev[key], 
+          markedForSave: false 
+        },
+      }));
+    }
   };
 
   const handleStagedChange = (field: keyof StagedChange, value: string | null) => {
@@ -117,6 +242,39 @@ export default function SegmentAnalyzePage() {
         markedForSave: !prev[key]?.markedForSave 
       },
     }));
+  };
+
+  // Refresh existing topics after save
+  const refreshExistingTopics = async () => {
+    if (!segmentId) return;
+    try {
+      const existingRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics`);
+      if (existingRes.ok) {
+        const existingData: SegmentTopic[] = await existingRes.json();
+        setExistingTopics(existingData);
+        
+        // Update staged changes with refreshed data
+        setStagedChanges(prev => {
+          const updated = { ...prev };
+          existingData.forEach((topic: SegmentTopic) => {
+            const key = topic.topic_id;
+            if (updated[key]) {
+              // Update existing staged change with fresh data, preserve markedForSave and isDirty
+              updated[key] = {
+                ...updated[key],
+                name: topic.name,
+                description: topic.description || undefined,
+                user_hypothesis: topic.user_hypothesis || undefined,
+                summary_text: topic.summary_text || undefined,
+              };
+            }
+          });
+          return updated;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to refresh existing topics:', err);
+    }
   };
 
   const handleGeneratePov = async () => {
@@ -242,10 +400,16 @@ export default function SegmentAnalyzePage() {
         return updated;
       });
       
-      // Show success message briefly, then redirect to segments list
+      // Clear selection (uncheck checkbox)
+      setActiveTopicKey(null);
+      
+      // Refresh existing topics to show updated data
+      await refreshExistingTopics();
+      
+      // Show success message briefly
       setTimeout(() => {
-        router.push('/');
-      }, 1500);
+        setSaveSuccess(false);
+      }, 2000);
       
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -265,24 +429,12 @@ export default function SegmentAnalyzePage() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">Segment & Topic Analyzer</h1>
-        <div className="flex items-center gap-4">
-          {saveSuccess && (
-            <span className="text-green-600 font-medium">✓ Saved successfully!</span>
-          )}
-          <button
-            onClick={handleFinalSave}
-            disabled={isSaving || topicsToSaveCount === 0}
-            className="px-6 py-2 font-semibold text-white bg-green-600 rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-          >
-            {isSaving ? 'Saving...' : `Save ${topicsToSaveCount > 0 ? `(${topicsToSaveCount})` : 'Selected'}`}
-          </button>
-        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
         {/* --- Left Column: Topic Selection & Editing --- */}
         <div className="space-y-6">
-          {/* --- Section 1: Suggested Topics Table --- */}
+          {/* --- Section 1: Topics Table --- */}
           <section>
             <h2 className="text-lg font-semibold text-gray-700 mb-3">1. Select a Topic to Analyze</h2>
             <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -295,61 +447,88 @@ export default function SegmentAnalyzePage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {initialTopics.map((topic) => {
-                    const key = topic.topic_id || `new-${topic.name}`;
-                    const staged = stagedChanges[key];
-                    const isActive = activeTopicKey === key;
-                    const isDirty = staged?.isDirty;
-                    const isMarked = staged?.markedForSave;
-                    
-                    return (
-                      <tr 
-                        key={key} 
-                        className={`cursor-pointer transition-colors ${
-                          isActive 
-                            ? 'bg-blue-100' 
-                            : isDirty 
-                              ? 'bg-yellow-50 hover:bg-yellow-100' 
-                              : 'hover:bg-gray-50'
-                        }`}
-                      >
-                        <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                  {allTopics.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-3 py-4 text-center text-sm text-gray-500">
+                        No topics found. Click "Generate AI Topic Suggestions" below to get started.
+                      </td>
+                    </tr>
+                  ) : (
+                    allTopics.map((topic) => {
+                      const key = topic.topic_id || `new-${topic.name}`;
+                      const staged = stagedChanges[key];
+                      const isActive = activeTopicKey === key;
+                      const isDirty = staged?.isDirty;
+                      const isMarked = staged?.markedForSave;
+                      
+                      return (
+                        <tr 
+                          key={key} 
+                          className={`cursor-pointer transition-colors ${
+                            isActive 
+                              ? 'bg-blue-100' 
+                              : isDirty 
+                                ? 'bg-yellow-50 hover:bg-yellow-100' 
+                                : 'hover:bg-gray-50'
+                          }`}
+                        >
+                        <td className="px-3 py-3">
                           <input
                             type="checkbox"
-                            checked={isMarked || false}
-                            onChange={() => toggleMarkedForSave(key)}
+                            checked={isActive || false}
+                            onChange={(e) => handleCheckboxChange(key, e.target.checked)}
                             className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500"
                           />
                         </td>
-                        <td 
-                          className="px-3 py-3 font-medium text-gray-800"
-                          onClick={() => handleTopicSelect(topic)}
-                        >
+                        <td className="px-3 py-3 font-medium text-gray-800">
                           <span className="flex items-center gap-2">
                             {staged?.name || topic.name}
                             {isDirty && <span className="text-xs text-yellow-600">●</span>}
                           </span>
                         </td>
-                        <td 
-                          className="px-3 py-3 text-gray-600"
-                          onClick={() => handleTopicSelect(topic)}
-                        >
+                        <td className="px-3 py-3 text-gray-600">
                           {topic.source}
                         </td>
-                      </tr>
-                    );
-                  })}
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
-            <p className="mt-2 text-xs text-gray-500">
-              Check the box next to topics you want to save. Yellow dot (●) indicates unsaved changes.
-            </p>
+            <div className="mt-3 flex items-center justify-between">
+              <p className="text-xs text-gray-500">
+                Check the box next to topics you want to save. Yellow dot (●) indicates unsaved changes.
+              </p>
+              <button
+                onClick={handleGenerateSuggestions}
+                disabled={isGeneratingSuggestions || activeTopicKey !== null}
+                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+              >
+                {isGeneratingSuggestions ? 'Generating...' : 'Generate AI Topic Suggestions'}
+              </button>
+            </div>
           </section>
 
           {/* --- Section 2: Topic Analysis & Editing Form --- */}
           <section>
-            <h2 className="text-lg font-semibold text-gray-700 mb-3">2. Assess Topic</h2>
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-lg font-semibold text-gray-700">2. Assess Topic</h2>
+              {topicsToSaveCount > 0 && (
+                <div className="flex items-center gap-3">
+                  {saveSuccess && (
+                    <span className="text-green-600 font-medium text-sm">✓ Saved successfully!</span>
+                  )}
+                  <button
+                    onClick={handleFinalSave}
+                    disabled={isSaving}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {isSaving ? 'Saving...' : `Save ${topicsToSaveCount > 0 ? `(${topicsToSaveCount})` : ''}`}
+                  </button>
+                </div>
+              )}
+            </div>
             {activeEditingTopic ? (
               <div className="p-5 bg-white rounded-lg shadow space-y-5">
                 {/* Topic Name */}
@@ -459,19 +638,6 @@ export default function SegmentAnalyzePage() {
                   </p>
                 </div>
 
-                {/* Mark for Save button */}
-                <div className="pt-4 border-t border-gray-200">
-                  <button
-                    onClick={() => activeTopicKey && toggleMarkedForSave(activeTopicKey)}
-                    className={`w-full py-2 font-medium rounded-md transition-colors ${
-                      activeEditingTopic.markedForSave
-                        ? 'bg-green-100 text-green-800 border border-green-300 hover:bg-green-200'
-                        : 'bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200'
-                    }`}
-                  >
-                    {activeEditingTopic.markedForSave ? '✓ Marked for Save' : 'Mark for Save'}
-                  </button>
-                </div>
               </div>
             ) : (
               <div className="p-6 bg-white rounded-lg shadow text-center text-gray-500">

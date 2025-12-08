@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 // Define the structure of a Segment object from our API
 type Segment = {
@@ -12,15 +12,13 @@ type Segment = {
   text: string;
   created_at: string;
   published_at: string | null;
+  topic_count: number;
 };
 
 // This is the main component for our page
 export default function SegmentsPage() {
-  const router = useRouter(); // Get the router instance
   // State to hold the list of segments
   const [segments, setSegments] = useState<Segment[]>([]);
-  // State to track which segment is currently selected
-  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   // State for loading and error messages
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,75 +47,91 @@ export default function SegmentsPage() {
     fetchSegments();
   }, []); // The empty array means this effect runs only once
 
-  const handleAnalyzeClick = () => {
-    if (selectedSegmentId) {
-      // Navigate to the new analysis page
-      router.push(`/segments/${selectedSegmentId}/analyze`);
-    } else {
-      alert('Please select a segment to analyze.');
-    }
-  };
-
   return (
-    <main className="flex min-h-screen flex-col items-center p-12 bg-gray-50">
-      <div className="w-full max-w-7xl">
-        <h1 className="text-3xl font-bold text-gray-800 mb-6">Segments</h1>
-        
-        <div className="flex items-center mb-4">
-          <button
-            onClick={handleAnalyzeClick}
-            disabled={!selectedSegmentId}
-            className="px-4 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-            >
-            Analyze Selected
-          </button>
-          {/* We can add the delete button later */}
-        </div>
-
-        <div className="overflow-x-auto bg-white rounded-lg shadow">
-          <table className="min-w-full text-sm divide-y divide-gray-200">
-            <thead className="bg-gray-100">
+    <main className="w-full px-4 py-6 lg:px-8">
+      <div className="py-6">
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Segments</h1>
+        <div className="bg-white shadow overflow-x-auto sm:rounded-lg">
+          <table className="w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-3 w-12"></th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Title</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Author</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Raw Text</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Created At</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-600">Published At</th>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
+                </th>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[25%]">
+                  Document Title
+                </th>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Author
+                </th>
+                <th scope="col" className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  # of linked topics
+                </th>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Raw Text
+                </th>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Created At
+                </th>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Published At
+                </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
+            <tbody className="bg-white divide-y divide-gray-200">
               {isLoading && (
-                <tr><td colSpan={7} className="p-4 text-center text-gray-500">Loading segments...</td></tr>
+                <tr>
+                  <td colSpan={7} className="px-6 py-4 text-center text-sm text-gray-500">
+                    Loading segments...
+                  </td>
+                </tr>
               )}
               {error && (
-                <tr><td colSpan={7} className="p-4 text-center text-red-500">Error: {error}</td></tr>
+                <tr>
+                  <td colSpan={7} className="px-6 py-4 text-center text-sm text-red-500">
+                    Error: {error}
+                  </td>
+                </tr>
+              )}
+              {!isLoading && !error && segments.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-6 py-4 text-center text-sm text-gray-500">
+                    No segments found.
+                  </td>
+                </tr>
               )}
               {!isLoading && !error && segments.map((segment) => (
-                <tr
-                  key={segment.id}
-                  onClick={() => setSelectedSegmentId(segment.id)}
-                  className={`cursor-pointer ${selectedSegmentId === segment.id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
-                >
-                  <td className="px-4 py-3 text-center">
-                    <input
-                      type="checkbox"
-                      checked={selectedSegmentId === segment.id}
-                      onChange={() => setSelectedSegmentId(segment.id)}
-                      className="form-checkbox h-4 w-4 text-blue-600 rounded"
-                    />
+                <tr key={segment.id} className="hover:bg-gray-50 align-top">
+                  <td className="px-3 py-3">
+                    <Link
+                      href={`/segments/${segment.id}/analyze`}
+                      className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-md shadow-sm hover:bg-indigo-700 active:bg-indigo-800 transition-all"
+                    >
+                      Analyze
+                    </Link>
                   </td>
-                  <td className="px-4 py-3 font-medium text-gray-800">{segment.title}</td>
-                  <td className="px-4 py-3 text-gray-600">{segment.author || 'N/A'}</td>
-                  <td className="px-4 py-3 text-gray-600 max-w-md truncate">{segment.text}</td>
-                  <td className="px-4 py-3 text-gray-600">{new Date(segment.created_at).toLocaleString()}</td>
-                  <td className="px-4 py-3 text-gray-600">{segment.published_at ? new Date(segment.published_at).toLocaleString() : 'N/A'}</td>
+                  <td className="px-3 py-3 text-sm font-medium text-gray-900 w-[25%]">
+                    <div className="line-clamp-3 overflow-hidden">
+                      {segment.title}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-500">{segment.author || 'N/A'}</td>
+                  <td className="px-3 py-3 text-center">
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${
+                      segment.topic_count > 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                    }`}>
+                      {segment.topic_count}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-600 max-w-md truncate">{segment.text}</td>
+                  <td className="px-3 py-3 text-xs text-gray-500">{new Date(segment.created_at).toLocaleString()}</td>
+                  <td className="px-3 py-3 text-xs text-gray-500">{segment.published_at ? new Date(segment.published_at).toLocaleString() : 'N/A'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        </div>
-      </main>
+      </div>
+    </main>
   );
 }
