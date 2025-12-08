@@ -1,5 +1,6 @@
 import os
 import time
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import psycopg
 from dotenv import load_dotenv
@@ -60,9 +61,17 @@ def mark_failed(conn: psycopg.Connection, request_id: str, error_message: str) -
 
 
 def main():
-    db_url = os.environ.get("SUPABASE_DB_URL")
-    if not db_url:
+    db_url_raw = os.environ.get("SUPABASE_DB_URL")
+    if not db_url_raw:
         raise SystemExit("SUPABASE_DB_URL must be set")
+
+    # Add a connection timeout to handle potential network issues
+    parts = urlparse(db_url_raw)
+    query_params = parse_qs(parts.query)
+    query_params["connect_timeout"] = ["10"]
+    new_query = urlencode(query_params, doseq=True)
+    new_parts = parts._replace(query=new_query)
+    db_url = urlunparse(new_parts)
 
     print("Starting transcription worker...")
     while True:
@@ -70,7 +79,7 @@ def main():
             request_info = claim_pending_request(conn)
 
         if not request_info:
-            print("No pending requests found. Waiting...")
+            print("No pending requests found. Waiting bro...")
             time.sleep(10)
             continue
 

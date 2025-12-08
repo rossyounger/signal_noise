@@ -181,6 +181,7 @@ def create_segment_from_transcript(
     }
     start_offset = int(start) if start is not None else None
     end_offset = int(end) if end is not None else None
+    offset_kind = "seconds"
 
     with conn.cursor() as cur:
         cur.execute(
@@ -188,14 +189,24 @@ def create_segment_from_transcript(
             INSERT INTO segments (
                 document_id,
                 text,
+                content_html,
                 start_offset,
                 end_offset,
                 provenance,
-                segment_status
+                segment_status,
+                offset_kind
             )
-            VALUES (%s, %s, %s, %s, %s, 'raw text')
+            VALUES (%s, %s, %s, %s, %s, %s, 'raw text', %s)
             """,
-            (document_id, text, start_offset, end_offset, Json(provenance)),
+            (
+                document_id,
+                text,
+                None,
+                start_offset,
+                end_offset,
+                Json(provenance),
+                offset_kind,
+            ),
         )
 
 

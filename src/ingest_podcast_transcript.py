@@ -51,11 +51,26 @@ def get_webpage_text(url: str) -> str:
         return ""
 
 
-def parse_feed(feed_url: str, months: int = 6) -> Iterable[PodcastTranscriptEntry]:
-    """Parse the podcast feed and extract transcript text from linked pages."""
-    parsed = feedparser.parse(feed_url)
+def _fetch_feed(feed_url: str) -> feedparser.FeedParserDict:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; SignalNoiseIngest/1.0; +https://signal-noise)",
+        "Accept": "application/rss+xml, application/atom+xml;q=0.9, */*;q=0.8",
+    }
+    try:
+        response = requests.get(feed_url, headers=headers, timeout=15)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Feed fetch error: {exc}") from exc
+
+    parsed = feedparser.parse(response.content)
     if parsed.bozo:
         raise RuntimeError(f"Feed parse error: {parsed.bozo_exception}")
+    return parsed
+
+
+def parse_feed(feed_url: str, months: int = 6) -> Iterable[PodcastTranscriptEntry]:
+    """Parse the podcast feed and extract transcript text from linked pages."""
+    parsed = _fetch_feed(feed_url)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=30 * months)
 

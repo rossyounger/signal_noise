@@ -72,3 +72,18 @@ def test_generate_segments_smoke(temp_db_conn: psycopg.Connection):
 
     assert status == "generated"
     assert version == result.version
+
+    with temp_db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*), bool_and(offset_kind = 'text'), bool_and(content_html IS NULL)
+            FROM segments
+            WHERE document_id = %s
+            """,
+            (document_id,),
+        )
+        count, is_text_offsets, html_all_null = cur.fetchone()
+
+    assert count == result.inserted_count
+    assert is_text_offsets
+    assert html_all_null

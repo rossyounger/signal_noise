@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 import feedparser
 import psycopg
+import requests
 from bs4 import BeautifulSoup
 from psycopg.types.json import Json
 
@@ -33,16 +34,44 @@ class FeedEntry:
         return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
-def parse_feed(feed_url: str) -> Iterable[FeedEntry]:
-    parsed = feedparser.parse(feed_url)
+def _fetch_feed(feed_url: str) -> feedparser.FeedParserDict:
+    """Fetch and parse an RSS/Atom feed with a browser-like user agent.
+
+    Some providers (e.g. dwarkesh.com) return HTTP 403 when contacted by the
+    default urllib user agent that feedparser uses internally. We fetch the
+    feed ourselves with requests and pass the bytes to feedparser to avoid
+    that issue.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; SignalNoiseIngest/1.0; +https://signal-noise)",
+        "Accept": "application/rss+xml, application/atom+xml;q=0.9, */*;q=0.8",
+    }
+    try:
+        response = requests.get(feed_url, headers=headers, timeout=15)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Feed fetch error: {exc}") from exc
+
+    parsed = feedparser.parse(response.content)
     if parsed.bozo:
         raise RuntimeError(f"Feed parse error: {parsed.bozo_exception}")
+    return parsed
+
+
+def parse_feed(feed_url: str) -> Iterable[FeedEntry]:
+    parsed = _fetch_feed(feed_url)
 
     for entry in parsed.entries:
         content_list = entry.get("content", [])
-        if not content_list:
+        content_html = ""
+        if content_list:
+            content_html = content_list[0].get("value", "")
+        else:
+            summary = entry.get("summary")
+            if summary:
+                content_html = summary
+        if not content_html:
             continue
-        content_html = content_list[0].get("value", "")
         provenance = {
             key: entry.get(key)
             for key in entry.keys()
@@ -103,6 +132,8 @@ def upsert_documents(conn: psycopg.Connection, source_id: str, entries: Iterable
                 )
                 ON CONFLICT (source_id, external_id)
                 DO UPDATE SET
+                    ingest_method = EXCLUDED.ingest_method,
+                    original_media_type = EXCLUDED.original_media_type,
                     original_url = EXCLUDED.original_url,
                     title = EXCLUDED.title,
                     author = EXCLUDED.author,

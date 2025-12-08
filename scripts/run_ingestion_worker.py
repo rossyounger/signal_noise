@@ -1,12 +1,16 @@
 import os
 import time
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
 import psycopg
 from dotenv import load_dotenv
 from scripts.run_ingestion import run_source_ingestion
 
 load_dotenv()
 
+
 def process_queued_requests(db_url: str):
+    print("Chillin bro...")
     """Fetch and process one queued ingestion request."""
     # Using a FOR UPDATE SKIP LOCKED to allow multiple workers in the future
     sql = """
@@ -50,14 +54,24 @@ def process_queued_requests(db_url: str):
         # No job found, wait
         time.sleep(10)
 
+
 def main():
-    db_url = os.environ.get("SUPABASE_DB_URL")
-    if not db_url:
+    db_url_raw = os.environ.get("SUPABASE_DB_URL")
+    if not db_url_raw:
         raise SystemExit("SUPABASE_DB_URL must be set")
+
+    # Add a connection timeout to handle potential network issues
+    parts = urlparse(db_url_raw)
+    query_params = parse_qs(parts.query)
+    query_params["connect_timeout"] = ["10"]
+    new_query = urlencode(query_params, doseq=True)
+    new_parts = parts._replace(query=new_query)
+    db_url = urlunparse(new_parts)
 
     print("Starting ingestion worker...")
     while True:
         process_queued_requests(db_url)
+
 
 if __name__ == "__main__":
     main()

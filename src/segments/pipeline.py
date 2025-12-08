@@ -17,11 +17,13 @@ from .llm_regrouper import SegmentSuggestion, regroup_chunks
 class SegmentDraft:
     document_id: str
     text: str
-    start_offset: int | None
-    end_offset: int | None
     provenance: dict
     version: int
+    content_html: str | None = None
+    start_offset: int | None = None
+    end_offset: int | None = None
     status: str = "proposed"
+    offset_kind: str = "text"
 
 
 @dataclass
@@ -201,11 +203,13 @@ def _persist_segments(conn: psycopg.Connection, drafts: Sequence[SegmentDraft]) 
         (
             draft.document_id,
             draft.text,
+            draft.content_html,
             draft.start_offset,
             draft.end_offset,
             draft.status,
             draft.version,
             Json(draft.provenance),
+            draft.offset_kind,
         )
         for draft in drafts
     ]
@@ -215,12 +219,14 @@ def _persist_segments(conn: psycopg.Connection, drafts: Sequence[SegmentDraft]) 
             INSERT INTO segments (
                 document_id,
                 text,
+                content_html,
                 start_offset,
                 end_offset,
                 segment_status,
                 version,
-                provenance
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                provenance,
+                offset_kind
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             values,
         )
