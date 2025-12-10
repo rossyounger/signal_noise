@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 
 interface TopicHomeView {
   topic_id: string;
@@ -119,6 +120,9 @@ export default function TopicsPage() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
+                </th>
                 <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
                   Name
                 </th>
@@ -139,13 +143,21 @@ export default function TopicsPage() {
             <tbody className="bg-white divide-y divide-gray-200">
               {topics.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
+                  <td colSpan={6} className="px-6 py-4 text-center text-sm text-gray-500">
                     No topics found. Create one to get started.
                   </td>
                 </tr>
               ) : (
                 topics.map((topic) => (
                   <tr key={topic.topic_id} className="hover:bg-gray-50">
+                    <td className="px-3 py-4">
+                      <Link
+                        href={`/topics/${topic.topic_id}/history`}
+                        className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-md shadow-sm hover:bg-indigo-700 active:bg-indigo-800 transition-all"
+                      >
+                        Analyze with History
+                      </Link>
+                    </td>
                     <td className="px-3 py-4 text-sm font-medium text-indigo-600">
                       {topic.latest_name || '-'}
                     </td>

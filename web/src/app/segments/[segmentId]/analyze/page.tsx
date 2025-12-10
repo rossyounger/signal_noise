@@ -17,6 +17,7 @@ type TopicSuggestion = {
   description?: string;
   user_hypothesis?: string;
   summary_text?: string;
+  _key?: string; // Internal key for deduplication (not sent to API)
 };
 
 type SegmentTopic = {
@@ -73,6 +74,7 @@ export default function SegmentAnalyzePage() {
       description: t.description || undefined,
       user_hypothesis: t.user_hypothesis || undefined,
       summary_text: t.summary_text || undefined,
+      _key: t.topic_id, // Use topic_id as key for existing topics
     }));
     
     // Create a map to deduplicate - prefer existing topics over AI suggestions
@@ -86,22 +88,25 @@ export default function SegmentAnalyzePage() {
     });
     
     // Then add AI suggestions, but skip if topic_id already exists (existing takes precedence)
-    aiSuggestions.forEach(topic => {
-      const key = topic.topic_id || `new-${topic.name}`;
+    let newTopicCounter = 0;
+    aiSuggestions.forEach((topic) => {
+      // Use topic_id if available, otherwise use counter-based key to prevent collisions
+      const key = topic.topic_id || `new-${newTopicCounter++}-${topic.name}`;
       // Only add if it's a new topic (no topic_id) or if we don't already have this topic_id
       if (!topic.topic_id) {
-        // New topic - use the generated key
+        // New topic - use the counter-based key to ensure uniqueness
         if (!topicMap.has(key)) {
-          topicMap.set(key, topic);
+          topicMap.set(key, { ...topic, _key: key });
         }
       } else {
         // Existing topic_id - only add if not already in map (existing topics take precedence)
         if (!topicMap.has(topic.topic_id)) {
-          topicMap.set(topic.topic_id, topic);
+          topicMap.set(topic.topic_id, { ...topic, _key: topic.topic_id });
         }
       }
     });
     
+    // Convert map to array, preserving the stored _key
     return Array.from(topicMap.values());
   }, [existingTopics, aiSuggestions]);
 
@@ -163,13 +168,14 @@ export default function SegmentAnalyzePage() {
       
       setAiSuggestions(suggestData.suggestions);
       
-      // Add AI suggestions to staged changes
+      // Add AI suggestions to staged changes with unique keys
       setStagedChanges(prev => {
         const updated = { ...prev };
+        let newTopicCounter = 0;
         suggestData.suggestions.forEach((topic: TopicSuggestion) => {
-          const key = topic.topic_id || `new-${topic.name}`;
+          const key = topic.topic_id || `new-${newTopicCounter++}-${topic.name}`;
           if (!updated[key]) {
-            updated[key] = { ...topic, isDirty: false, markedForSave: false };
+            updated[key] = { ...topic, _key: key, isDirty: false, markedForSave: false };
           }
         });
         return updated;
@@ -363,7 +369,7 @@ export default function SegmentAnalyzePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           topics: topicsToSave.map(t => ({
-            topic_id: t.topic_id || null,  // Ensure null for new topics
+            topic_id: (t.topic_id && t.topic_id.trim()) || null,  // Ensure null for new topics (empty strings become null)
             name: t.name,
             description: t.description || null,
             user_hypothesis: t.user_hypothesis || null,
@@ -455,7 +461,8 @@ export default function SegmentAnalyzePage() {
                     </tr>
                   ) : (
                     allTopics.map((topic) => {
-                      const key = topic.topic_id || `new-${topic.name}`;
+                      // Use the stored key from deduplication, or fallback to topic_id
+                      const key = topic._key || topic.topic_id || `new-${topic.name}`;
                       const staged = stagedChanges[key];
                       const isActive = activeTopicKey === key;
                       const isDirty = staged?.isDirty;

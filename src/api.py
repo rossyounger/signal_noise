@@ -86,7 +86,7 @@ def _require_pool() -> AsyncConnectionPool:
 class TopicHomeView(BaseModel):
     """Represents the latest version of a topic for the home page."""
     topic_id: str
-    latest_name: str
+    latest_name: str | None
     latest_description: str | None
     latest_user_hypothesis: str | None
     last_updated_at: datetime
@@ -151,6 +151,19 @@ class SegmentTopic(BaseModel):
     user_hypothesis: str | None
     summary_text: str | None
     created_at: datetime
+
+class TopicHistoryEntry(BaseModel):
+    """Represents a single entry in topics_history for topic history view."""
+    topic_id: str
+    segment_id: str
+    name: str
+    description: str | None
+    user_hypothesis: str | None
+    summary_text: str | None
+    created_at: datetime
+    segment_text_preview: str | None
+    document_id: str | None
+    document_title: str | None
 
 # --- Documents & Sources Models ---
 
@@ -625,6 +638,47 @@ async def create_topic(req: TopicCreate) -> TopicResponse:
                 
     return TopicResponse(topic_id=topic_id)
 
+@app.get("/topics/{topic_id}/history", response_model=List[TopicHistoryEntry])
+async def get_topic_history(topic_id: str):
+    """
+    Returns all topics_history entries for a given topic_id, sorted by created_at DESC.
+    Each entry represents one segment analysis for this topic.
+    """
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    th.topic_id,
+                    th.segment_id,
+                    th.name,
+                    th.description,
+                    th.user_hypothesis,
+                    th.summary_text,
+                    th.created_at,
+                    LEFT(s.text, 200) as segment_text_preview,
+                    d.id as document_id,
+                    d.title as document_title
+                FROM topics_history th
+                LEFT JOIN segments s ON th.segment_id = s.id
+                LEFT JOIN documents d ON s.document_id = d.id
+                WHERE th.topic_id = %s
+                ORDER BY th.created_at DESC
+                """,
+                (topic_id,)
+            )
+            rows = await cur.fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d['topic_id'] = str(d['topic_id'])  # Convert UUID to string
+        d['segment_id'] = str(d['segment_id'])  # Convert UUID to string
+        if d.get('document_id'):
+            d['document_id'] = str(d['document_id'])
+        results.append(TopicHistoryEntry(**d))
+    return results
+
 # --- Analysis Endpoints (Real Implementation) ---
 
 @app.post("/segments/{segment_id}/topics:suggest", response_model=SuggestTopicsResponse)
@@ -716,49 +770,56 @@ async def save_segment_topics_history(segment_id: str, req: SaveTopicsHistoryReq
     Creates new records in topics_history and links any generated POVs.
     """
     pool = _require_pool()
-    async with pool.connection() as conn:
-        async with conn.transaction():
-            for topic_payload in req.topics:
-                topic_id = topic_payload.topic_id
-                
-                # If topic_id is null, it's a new topic. Create a new topic_id (no name-based lookup).
-                if not topic_id:
+    try:
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                for topic_payload in req.topics:
+                    # Normalize topic_id: treat empty string as None for new topics
+                    topic_id = topic_payload.topic_id if topic_payload.topic_id else None
+                    
+                    # If topic_id is null or empty, it's a new topic. Create a new topic_id (no name-based lookup).
+                    if not topic_id:
+                        async with conn.cursor(row_factory=dict_row) as cur:
+                            await cur.execute(
+                                "INSERT INTO topic_ids DEFAULT VALUES RETURNING id"
+                            )
+                            row = await cur.fetchone()
+                            if not row:
+                                raise HTTPException(status_code=500, detail="Failed to create topic ID.")
+                            topic_id = str(row["id"])
+
+                    # Now, insert the new entry into the history log.
                     async with conn.cursor(row_factory=dict_row) as cur:
                         await cur.execute(
-                            "INSERT INTO topic_ids DEFAULT VALUES RETURNING id"
-                        )
-                        row = await cur.fetchone()
-                        if not row:
-                            raise HTTPException(status_code=500, detail="Failed to create topic ID.")
-                        topic_id = str(row["id"])
-
-                # Now, insert the new entry into the history log.
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    await cur.execute(
-                        """
-                        INSERT INTO topics_history (topic_id, segment_id, name, description, user_hypothesis, summary_text)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        RETURNING id;
-                        """,
-                        (topic_id, segment_id, topic_payload.name, topic_payload.description, topic_payload.user_hypothesis, topic_payload.summary_text)
-                    )
-                    history_row = await cur.fetchone()
-                    if not history_row:
-                        raise HTTPException(status_code=500, detail="Failed to create topics history record.")
-                    history_id = str(history_row["id"])
-
-                # If a POV was generated, link it to the new history record and finalize it.
-                if topic_payload.pov_id:
-                    async with conn.cursor() as cur:
-                        await cur.execute(
                             """
-                            UPDATE persona_topic_povs
-                            SET topics_history_id = %s, run_status = 'final', updated_at = now()
-                            WHERE id = %s;
+                            INSERT INTO topics_history (topic_id, segment_id, name, description, user_hypothesis, summary_text)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            RETURNING id;
                             """,
-                            (history_id, topic_payload.pov_id)
+                            (topic_id, segment_id, topic_payload.name, topic_payload.description, topic_payload.user_hypothesis, topic_payload.summary_text)
                         )
-    return
+                        history_row = await cur.fetchone()
+                        if not history_row:
+                            raise HTTPException(status_code=500, detail="Failed to create topics history record.")
+                        history_id = str(history_row["id"])
+
+                    # If a POV was generated, link it to the new history record and finalize it.
+                    if topic_payload.pov_id:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                """
+                                UPDATE persona_topic_povs
+                                SET topics_history_id = %s, run_status = 'final', updated_at = now()
+                                WHERE id = %s;
+                                """,
+                                (history_id, topic_payload.pov_id)
+                            )
+        return
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save segment topics history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save topics: {str(e)}")
 
 
 # --- Documents & Sources Endpoints ---
