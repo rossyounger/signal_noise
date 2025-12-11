@@ -551,18 +551,46 @@ async def get_segment_topics(segment_id: str):
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT DISTINCT ON (topic_id)
-                    topic_id,
-                    name,
-                    description,
-                    user_hypothesis,
-                    summary_text,
-                    created_at
-                FROM topics_history
-                WHERE segment_id = %s
-                ORDER BY topic_id, created_at DESC
+                WITH 
+                -- 1. Identify topics linked to this segment
+                my_topics AS (
+                    SELECT DISTINCT topic_id
+                    FROM topics_history
+                    WHERE segment_id = %s
+                ),
+                -- 2. Get the latest LOCAL data (analysis result) for this segment
+                local_latest AS (
+                    SELECT DISTINCT ON (topic_id) 
+                        topic_id, 
+                        summary_text,
+                        created_at
+                    FROM topics_history
+                    WHERE segment_id = %s
+                    ORDER BY topic_id, created_at DESC
+                ),
+                -- 3. Get the latest GLOBAL definition (Name, Desc, Hypothesis) for these topics
+                global_latest AS (
+                    SELECT DISTINCT ON (topic_id)
+                        topic_id,
+                        name,
+                        description,
+                        user_hypothesis
+                    FROM topics_history
+                    WHERE topic_id IN (SELECT topic_id FROM my_topics)
+                    ORDER BY topic_id, created_at DESC
+                )
+                -- 4. Combine: Global Definition + Local Analysis
+                SELECT
+                    gl.topic_id,
+                    gl.name,
+                    gl.description,
+                    gl.user_hypothesis,
+                    ll.summary_text,
+                    ll.created_at
+                FROM global_latest gl
+                JOIN local_latest ll ON gl.topic_id = ll.topic_id
                 """,
-                (segment_id,)
+                (segment_id, segment_id)
             )
             rows = await cur.fetchall()
     results = []

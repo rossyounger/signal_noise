@@ -491,6 +491,17 @@ export default function SegmentAnalyzePage() {
   };
 
 
+  // --- Section State ---
+  const [sections, setSections] = useState({
+    selectTopics: true,
+    assessTopic: true,
+    segmentContent: true
+  });
+
+  const toggleSection = (key: keyof typeof sections) => {
+    setSections(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
   // --- UI Rendering ---
   if (isLoading) return <div className="p-12 text-center">Loading workbench...</div>;
   if (error) return <div className="p-12 text-center text-red-500">Error: {error}</div>;
@@ -502,239 +513,283 @@ export default function SegmentAnalyzePage() {
         <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">Segment & Topic Analyzer</h1>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
-        {/* --- Left Column: Topic Selection & Editing --- */}
-        <div className="space-y-6">
-          {/* --- Section 1: Topics Table --- */}
-          <section>
-            <h2 className="text-lg font-semibold text-gray-700 mb-3">1. Select a Topic to Analyze</h2>
-            <div className="bg-white rounded-lg shadow overflow-hidden">
-              <table className="min-w-full text-sm divide-y divide-gray-200">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="px-3 py-3 text-left font-semibold text-gray-600 w-10">Save</th>
-                    <th className="px-3 py-3 text-left font-semibold text-gray-600">Topic Name</th>
-                    <th className="px-3 py-3 text-left font-semibold text-gray-600 w-24">Source</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {allTopics.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="px-3 py-4 text-center text-sm text-gray-500">
-                        No topics found. Click "Generate AI Topic Suggestions" below to get started.
-                      </td>
-                    </tr>
-                  ) : (
-                    allTopics.map((topic) => {
-                      // Use the stored key from deduplication, or fallback to topic_id
-                      const key = topic._key || topic.topic_id || `new-${topic.name}`;
-                      const staged = stagedChanges[key];
-                      const isActive = activeTopicKey === key;
-                      const isDirty = staged?.isDirty;
+      <div className="space-y-6 max-w-5xl mx-auto w-full">
 
-                      return (
-                        <tr
-                          key={key}
-                          className={`cursor-pointer transition-colors ${isActive
-                            ? 'bg-blue-100'
-                            : isDirty
-                              ? 'bg-yellow-50 hover:bg-yellow-100'
-                              : 'hover:bg-gray-50'
-                            }`}
-                        >
-                          <td className="px-3 py-3">
-                            <input
-                              type="checkbox"
-                              checked={staged?.markedForSave || false} // Use staged.markedForSave
-                              onChange={(e) => handleCheckboxChange(key, e.target.checked)}
-                              className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500"
-                            />
-                          </td>
-                          <td className="px-3 py-3 font-medium text-gray-800">
-                            <span className="flex items-center gap-2">
-                              {staged?.name || topic.name}
-                              {isDirty && <span className="text-xs text-yellow-600">●</span>}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3 text-gray-600">
-                            {topic.source}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-3 flex items-center justify-between">
-              <p className="text-xs text-gray-500">
-                Check the box next to topics you want to save. Yellow dot (●) indicates unsaved changes.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleLinkExisting}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-                >
-                  Link Existing Topic
-                </button>
+        {/* --- Section 1: Select Topics --- */}
+        <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
+          <div
+            className="px-4 py-3 bg-gray-100 border-b border-gray-200 flex justify-between items-center cursor-pointer select-none"
+            onClick={() => toggleSection('selectTopics')}
+          >
+            <h2 className="text-lg font-semibold text-gray-700 flex items-center gap-2">
+              <span className={`transform transition-transform ${sections.selectTopics ? 'rotate-90' : ''}`}>▶</span>
+              1. Select Topics
+            </h2>
+          </div>
+
+          {sections.selectTopics && (
+            <div className="p-4 space-y-4">
+              {/* Toolbar Row */}
+              <div className="flex gap-4 items-center">
                 <button
                   onClick={handleGenerateSuggestions}
                   disabled={isGeneratingSuggestions || activeTopicKey !== null}
-                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                  className="flex-1 py-2 text-sm font-medium text-white bg-indigo-600 rounded shadow-sm hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed transition-colors"
                 >
-                  {isGeneratingSuggestions ? 'Generating...' : 'Generate AI Topic Suggestions'}
+                  {isGeneratingSuggestions ? 'Generating Suggestions...' : 'Generate AI Topic Suggestions'}
+                </button>
+                <button
+                  onClick={handleLinkExisting}
+                  className="px-6 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded shadow-sm hover:bg-gray-50 transition-colors"
+                >
+                  Link Existing Topic
                 </button>
               </div>
-            </div>
-          </section>
 
-          {/* --- Section 2: Topic Analysis & Editing Form --- */}
-          <section>
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-lg font-semibold text-gray-700">2. Assess Topic</h2>
-              {topicsToSaveCount > 0 && (
-                <div className="flex items-center gap-3">
-                  {saveSuccess && (
-                    <span className="text-green-600 font-medium text-sm">✓ Saved successfully!</span>
-                  )}
-                  <button
-                    onClick={handleFinalSave}
-                    disabled={isSaving}
-                    className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {isSaving ? 'Saving...' : `Save ${topicsToSaveCount > 0 ? `(${topicsToSaveCount})` : ''}`}
-                  </button>
+              {/* Topics Table */}
+              <div className="bg-white rounded border border-gray-200 overflow-hidden">
+                <table className="min-w-full text-sm divide-y divide-gray-200">
+                  <thead className="bg-gray-50 text-xs uppercase font-medium text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3 text-left w-12">Save</th>
+                      <th className="px-4 py-3 text-left">Topic Name</th>
+                      <th className="px-4 py-3 text-left w-32">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {allTopics.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="px-4 py-8 text-center text-gray-500 italic">
+                          No topics yet. Generate suggestions or link an existing one to start.
+                        </td>
+                      </tr>
+                    ) : (
+                      allTopics.map((topic) => {
+                        const key = topic._key || topic.topic_id || `new-${topic.name}`;
+                        const staged = stagedChanges[key];
+                        const isActive = activeTopicKey === key;
+                        const isDirty = staged?.isDirty;
+
+                        return (
+                          <tr
+                            key={key}
+                            className={`cursor-pointer transition-colors ${isActive
+                              ? 'bg-blue-50'
+                              : isDirty
+                                ? 'bg-yellow-50 hover:bg-yellow-100'
+                                : 'hover:bg-gray-50'
+                              }`}
+                            onClick={() => {
+                              // Checking the box handles selection now, but clicking row can also select?
+                              // Let's keep checkbox as primary for consistency with "Save" intent, 
+                              // but maybe row click sets active without marking for save?
+                              // Current logic: Checkbox checks => Selects & Marks for Save.
+                              // Let's stick to Checkbox for "Action", but row click just to "View"?
+                              // For now, let's keep interactions simple. Row click does nothing unless we add it.
+                              // Actually, user might want to edit without saving? 
+                              // Let's make row click trigger selection (but not mark for save) if we want?
+                              // The previous code didn't have row click handler on TR, only checkbox.
+                              // Wait, the previous code had NO onclick on TR, just hover.
+                            }}
+                          >
+                            <td className="px-4 py-3">
+                              <input
+                                type="checkbox"
+                                checked={staged?.markedForSave || false}
+                                onChange={(e) => handleCheckboxChange(key, e.target.checked)}
+                                className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500 cursor-pointer"
+                              />
+                            </td>
+                            <td className="px-4 py-3 font-medium text-gray-800">
+                              {staged?.name || topic.name}
+                              {isDirty && <span className="ml-2 text-xs text-yellow-600 font-normal">● Unsaved</span>}
+                            </td>
+                            <td className="px-4 py-3 text-gray-500">
+                              {topic.source}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-gray-500">
+                Tip: Check the box to select a topic for analysis and editing.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* --- Section 2: Assess Topic --- */}
+        <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
+          <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 flex justify-between items-center">
+            <div
+              className="flex items-center gap-2 cursor-pointer select-none"
+              onClick={() => toggleSection('assessTopic')}
+            >
+              <h2 className="text-lg font-semibold text-gray-900">
+                <span className={`inline-block transform transition-transform ${sections.assessTopic ? 'rotate-90' : ''}`}>▶</span>
+                2. Assess Topic
+              </h2>
+            </div>
+
+            {/* Header Action: Save Button */}
+            {topicsToSaveCount > 0 && (
+              <div className="flex items-center gap-3">
+                {saveSuccess && (
+                  <span className="text-green-600 font-medium text-sm animate-pulse">✓ Saved!</span>
+                )}
+                <button
+                  onClick={handleFinalSave}
+                  disabled={isSaving}
+                  className="px-4 py-1.5 text-sm font-semibold text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  {isSaving ? 'Saving...' : `Save Changes (${topicsToSaveCount})`}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {sections.assessTopic && (
+            <div className="p-6">
+              {activeEditingTopic ? (
+                <div className="space-y-6">
+                  {/* Topic Name */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 mb-1">Topic Name</label>
+                    <input
+                      type="text"
+                      value={activeEditingTopic.name || ''}
+                      onChange={e => handleStagedChange('name', e.target.value)}
+                      className="block w-full px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                    />
+                  </div>
+
+                  {/* Description Field */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-sm font-medium text-gray-900">Description (Markdown)</label>
+                      <button
+                        onClick={() => handleStagedChange('editingField', activeEditingTopic.editingField === 'description' ? null : 'description')}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                      >
+                        {activeEditingTopic.editingField === 'description' ? 'Done' : 'Edit'}
+                      </button>
+                    </div>
+                    {activeEditingTopic.editingField === 'description' ? (
+                      <textarea
+                        value={activeEditingTopic.description || ''}
+                        onChange={e => handleStagedChange('description', e.target.value)}
+                        rows={5}
+                        className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm text-black"
+                        placeholder="Enter markdown description..."
+                      />
+                    ) : (
+                      <div
+                        className="block w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[100px] prose prose-sm max-w-none hover:bg-gray-100 cursor-text transition-colors text-black"
+                        onClick={() => handleStagedChange('editingField', 'description')}
+                      >
+                        <ReactMarkdown>{activeEditingTopic.description || '*No description.*'}</ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* User Hypothesis Field */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-sm font-medium text-gray-900">User Hypothesis (Markdown)</label>
+                      <button
+                        onClick={() => handleStagedChange('editingField', activeEditingTopic.editingField === 'user_hypothesis' ? null : 'user_hypothesis')}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                      >
+                        {activeEditingTopic.editingField === 'user_hypothesis' ? 'Done' : 'Edit'}
+                      </button>
+                    </div>
+                    {activeEditingTopic.editingField === 'user_hypothesis' ? (
+                      <textarea
+                        value={activeEditingTopic.user_hypothesis || ''}
+                        onChange={e => handleStagedChange('user_hypothesis', e.target.value)}
+                        rows={5}
+                        className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm text-black"
+                        placeholder="Enter markdown hypothesis..."
+                      />
+                    ) : (
+                      <div
+                        className="block w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[100px] prose prose-sm max-w-none hover:bg-gray-100 cursor-text transition-colors text-black"
+                        onClick={() => handleStagedChange('editingField', 'user_hypothesis')}
+                      >
+                        <ReactMarkdown>{activeEditingTopic.user_hypothesis || '*No hypothesis.*'}</ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Segment <> Topic Analysis */}
+                  <div className="pt-6 border-t border-gray-200">
+                    <div className="flex justify-between items-center mb-3">
+                      <label className="block text-sm font-medium text-gray-900">Segment &lt;&gt; Topic Analysis</label>
+                      <button
+                        onClick={handleCheckHypothesis}
+                        disabled={isCheckingHypothesis || !activeEditingTopic.user_hypothesis}
+                        className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isCheckingHypothesis ? 'Analyzing...' : 'Run Hypothesis Analysis'}
+                      </button>
+                    </div>
+                    <textarea
+                      value={activeEditingTopic.summary_text || ''}
+                      onChange={e => handleStagedChange('summary_text', e.target.value)}
+                      rows={6}
+                      placeholder="Does this segment confirm, refute, or nuance the hypothesis?"
+                      className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm text-black"
+                    />
+                  </div>
+
+                  {/* Analyst POV */}
+                  <div className="p-5 bg-blue-50 rounded-lg border border-blue-100">
+                    <div className="flex justify-between items-center mb-2">
+                      <h3 className="font-semibold text-blue-900 text-sm">Analyst POV</h3>
+                      <button
+                        onClick={handleGeneratePov}
+                        disabled={isGeneratingPov}
+                        className="px-3 py-1.5 font-medium text-xs text-white bg-blue-600 rounded hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isGeneratingPov ? 'Generating...' : 'Get Analyst POV'}
+                      </button>
+                    </div>
+                    <div className="prose prose-sm max-w-none text-blue-800">
+                      <ReactMarkdown>{activeEditingTopic.pov_summary || '*Click button to generate Analyst POV.*'}</ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-12 bg-gray-50 rounded border border-dashed border-gray-300 text-center">
+                  <p className="text-gray-500">Select a topic from "Select Topics" above to assess it here.</p>
                 </div>
               )}
             </div>
-            {activeEditingTopic ? (
-              <div className="p-5 bg-white rounded-lg shadow space-y-5">
-                {/* Topic Name */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Topic Name</label>
-                  <input
-                    type="text"
-                    value={activeEditingTopic.name || ''}
-                    onChange={e => handleStagedChange('name', e.target.value)}
-                    className="block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm text-gray-900"
-                  />
-                </div>
-
-                {/* Description Field */}
-                <div>
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="block text-sm font-medium text-gray-700">Description (Markdown)</label>
-                    <button
-                      onClick={() => handleStagedChange('editingField', activeEditingTopic.editingField === 'description' ? null : 'description')}
-                      className="text-xs text-blue-600 hover:underline"
-                    >
-                      {activeEditingTopic.editingField === 'description' ? 'Preview' : 'Edit'}
-                    </button>
-                  </div>
-                  {activeEditingTopic.editingField === 'description' ? (
-                    <textarea
-                      value={activeEditingTopic.description || ''}
-                      onChange={e => handleStagedChange('description', e.target.value)}
-                      rows={4}
-                      className="block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm text-gray-900 font-mono"
-                      placeholder="Enter markdown description..."
-                    />
-                  ) : (
-                    <div
-                      className="block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md min-h-[100px] prose prose-sm max-w-none text-gray-900 cursor-pointer hover:bg-gray-100"
-                      onClick={() => handleStagedChange('editingField', 'description')}
-                    >
-                      <ReactMarkdown>{activeEditingTopic.description || '*No description.*'}</ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-
-                {/* User Hypothesis Field */}
-                <div>
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="block text-sm font-medium text-gray-700">User Hypothesis (Markdown)</label>
-                    <button
-                      onClick={() => handleStagedChange('editingField', activeEditingTopic.editingField === 'user_hypothesis' ? null : 'user_hypothesis')}
-                      className="text-xs text-blue-600 hover:underline"
-                    >
-                      {activeEditingTopic.editingField === 'user_hypothesis' ? 'Preview' : 'Edit'}
-                    </button>
-                  </div>
-                  {activeEditingTopic.editingField === 'user_hypothesis' ? (
-                    <textarea
-                      value={activeEditingTopic.user_hypothesis || ''}
-                      onChange={e => handleStagedChange('user_hypothesis', e.target.value)}
-                      rows={4}
-                      className="block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm text-gray-900 font-mono"
-                      placeholder="Enter markdown hypothesis..."
-                    />
-                  ) : (
-                    <div
-                      className="block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md min-h-[100px] prose prose-sm max-w-none text-gray-900 cursor-pointer hover:bg-gray-100"
-                      onClick={() => handleStagedChange('editingField', 'user_hypothesis')}
-                    >
-                      <ReactMarkdown>{activeEditingTopic.user_hypothesis || '*No hypothesis.*'}</ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-
-                {/* Segment <> Topic Analysis */}
-                <div className="pt-4 border-t border-gray-200">
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="block text-sm font-medium text-gray-700">Segment &lt;&gt; Topic Analysis</label>
-                    <button
-                      onClick={handleCheckHypothesis}
-                      disabled={isCheckingHypothesis || !activeEditingTopic.user_hypothesis}
-                      className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isCheckingHypothesis ? 'Analyzing...' : 'Run Hypothesis Analysis'}
-                    </button>
-                  </div>
-                  <textarea
-                    value={activeEditingTopic.summary_text || ''}
-                    onChange={e => handleStagedChange('summary_text', e.target.value)}
-                    rows={4}
-                    placeholder="Does this segment confirm, refute, or nuance the hypothesis?"
-                    className="block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm text-gray-900"
-                  />
-                </div>
-
-                {/* Analyst POV */}
-                <div className="p-4 bg-gray-50 rounded-md border border-gray-200">
-                  <div className="flex justify-between items-center">
-                    <h3 className="font-semibold text-gray-800 text-sm">Analyst POV</h3>
-                    <button
-                      onClick={handleGeneratePov}
-                      disabled={isGeneratingPov}
-                      className="px-3 py-1.5 font-medium text-xs text-white bg-blue-600 rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isGeneratingPov ? 'Generating...' : 'Get Analyst POV'}
-                    </button>
-                  </div>
-                  <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
-                    {activeEditingTopic.pov_summary || <span className="text-gray-500 italic">Click button to generate Analyst POV.</span>}
-                  </p>
-                </div>
-
-              </div>
-            ) : (
-              <div className="p-6 bg-white rounded-lg shadow text-center text-gray-500">
-                Select a topic from the table above to edit its details.
-              </div>
-            )}
-          </section>
+          )}
         </div>
 
-        {/* --- Right Column: Segment Content --- */}
-        <section>
-          <h2 className="text-lg font-semibold text-gray-700 mb-3">
-            Segment Content
-          </h2>
+        {/* --- Section 3: Segment Content --- */}
+        <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
           <div
-            className="prose prose-sm max-w-none p-5 bg-white rounded-lg shadow max-h-[calc(100vh-180px)] overflow-y-auto whitespace-pre-wrap text-gray-900"
-            dangerouslySetInnerHTML={{ __html: workbenchData?.segment.content_html || workbenchData?.segment.text || '' }}
-          />
-        </section>
+            className="px-4 py-3 bg-gray-100 border-b border-gray-200 flex justify-between items-center cursor-pointer select-none"
+            onClick={() => toggleSection('segmentContent')}
+          >
+            <h2 className="text-lg font-semibold text-gray-700">
+              <span className={`inline-block transform transition-transform ${sections.segmentContent ? 'rotate-90' : ''}`}>▶</span>
+              3. Segment Content
+            </h2>
+          </div>
+
+          {sections.segmentContent && (
+            <div
+              className="prose prose-sm max-w-none p-6 bg-white max-h-[calc(100vh-200px)] overflow-y-auto whitespace-pre-wrap text-gray-900 border-b border-gray-50"
+              dangerouslySetInnerHTML={{ __html: workbenchData?.segment.content_html || workbenchData?.segment.text || '' }}
+            />
+          )}
+        </div>
       </div>
 
       {/* --- Topic Selection Modal --- */}
