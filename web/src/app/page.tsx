@@ -38,7 +38,7 @@ export default function SegmentsPage() {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An unknown error occurred');
         // In case of error, you might want to clear segments
-        setSegments([]); 
+        setSegments([]);
       } finally {
         setIsLoading(false);
       }
@@ -103,12 +103,32 @@ export default function SegmentsPage() {
               {!isLoading && !error && segments.map((segment) => (
                 <tr key={segment.id} className="hover:bg-gray-50 align-top">
                   <td className="px-3 py-3">
-                    <Link
-                      href={`/segments/${segment.id}/analyze`}
-                      className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-md shadow-sm hover:bg-indigo-700 active:bg-indigo-800 transition-all"
-                    >
-                      Analyze
-                    </Link>
+                    <div className="flex gap-2">
+                      <Link
+                        href={`/segments/${segment.id}/analyze`}
+                        className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-md shadow-sm hover:bg-indigo-700 active:bg-indigo-800 transition-all"
+                      >
+                        Analyze
+                      </Link>
+                      <button
+                        onClick={async () => {
+                          if (confirm("this will delete the segment forever, are you sure?") && confirm("ARE YOU REALLY REALLY SURE??")) {
+                            try {
+                              const res = await fetch(`http://127.0.0.1:8000/segments/${segment.id}`, {
+                                method: 'DELETE',
+                              });
+                              if (!res.ok) throw new Error('Failed to delete');
+                              setSegments(prev => prev.filter(s => s.id !== segment.id));
+                            } catch (err: any) {
+                              alert(err.message);
+                            }
+                          }
+                        }}
+                        className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 transition-all"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                   <td className="px-3 py-3 text-sm font-medium text-gray-900 w-[25%]">
                     <div className="line-clamp-3 overflow-hidden">
@@ -117,9 +137,8 @@ export default function SegmentsPage() {
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-500">{segment.author || 'N/A'}</td>
                   <td className="px-3 py-3 text-center">
-                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${
-                      segment.topic_count > 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
-                    }`}>
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${segment.topic_count > 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                      }`}>
                       {segment.topic_count}
                     </span>
                   </td>
