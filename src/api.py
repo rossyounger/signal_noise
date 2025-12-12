@@ -620,31 +620,6 @@ async def create_manual_segment(req: SegmentCreate) -> SegmentResponse:
                 if not document_row:
                     raise HTTPException(status_code=404, detail="Document not found")
 
-                # Clean text logic (omitted for brevity in replacement context check, but implicit in existing code)
-                # ... (rest of create logic) ...
-                
-                # RE-INSERTING THE FULL EXISTING FUNCTION CONTENT TO BE SAFE IS TOO LARGE.
-                # I will target a smaller insertion point or append.
-                # Actually, simply appending the DELETE endpoint after create_manual_segment is easier.
-                pass 
-
-# Retrying with a simpler append strategy or targetting the end of the file/block.
-# I'll just add it after create_segment. 
-# Wait, I can't see the full file content easily to pick a good spot without potentially overwriting.
-# Best practice: find a spot between functions.
-# `create_manual_segment` ends around line 330.
-# Let's search for `@app.post("/segments"` and insert after the function body.
-
-# Actually, I'll put it after `create_manual_segment`.
-# I'll use a `replace_file_content` targeting the end of `create_manual_segment` to append it.
-# Or better, I can verify line numbers.
-# `create_manual_segment` starts at line ~260 based on previous `search_in_file` (it was truncated).
-# Let's search again to be sure of line numbers or use `view_file`.
-
-                document_row = await cur.fetchone()
-            if not document_row:
-                raise HTTPException(status_code=404, detail="Document not found")
-
             content_html = document_row.get("content_html")
             html_source = req.html if req.html and req.html.strip() else None
             segment_html: str | None = None
