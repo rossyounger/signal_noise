@@ -1,10 +1,10 @@
-"""Analysis module for topic suggestions and hypothesis checking."""
+"""Analysis module for hypothesis suggestions and checking."""
 
-from .suggestions import suggest_topics, TopicSuggestionModel
+from .suggestions import HypothesisSuggestionModel, suggest_hypotheses
 from .hypothesis import check_hypothesis
 
 __all__ = [
-    "suggest_topics",
-    "TopicSuggestionModel",
+    "suggest_hypotheses",
+    "HypothesisSuggestionModel",
     "check_hypothesis",
 ]

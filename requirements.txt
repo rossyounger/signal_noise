@@ -11,6 +11,7 @@ httpx<0.28
 mypy==1.18.2
 openai==1.52.0
 psycopg[binary,pool]==3.2.2
+pypdf>=3.0.0
 pytest==8.4.2
 python-dotenv==1.1.1
 requests==2.32.5

@@ -12,7 +12,7 @@ type Segment = {
   text: string;
   created_at: string;
   published_at: string | null;
-  topic_count: number;
+  hypothesis_count: number;
 };
 
 // This is the main component for our page
@@ -65,7 +65,7 @@ export default function SegmentsPage() {
                   Author
                 </th>
                 <th scope="col" className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  # of linked topics
+                  # of hypotheses
                 </th>
                 <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Raw Text
@@ -137,9 +137,9 @@ export default function SegmentsPage() {
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-500">{segment.author || 'N/A'}</td>
                   <td className="px-3 py-3 text-center">
-                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${segment.topic_count > 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${segment.hypothesis_count > 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
                       }`}>
-                      {segment.topic_count}
+                      {segment.hypothesis_count}
                     </span>
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-600 max-w-md truncate">{segment.text}</td>

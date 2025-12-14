@@ -10,39 +10,46 @@ type SegmentWorkbenchContent = {
   document: { id: string; url: string; title: string; author: string | null; html_content: string | null; };
 };
 
-type TopicSuggestion = {
-  topic_id?: string;
-  name: string;
+type HypothesisSuggestion = {
+  hypothesis_id?: string;
+  hypothesis_text: string;
   source: 'existing' | 'generated' | 'Linked';
   description?: string;
-  user_hypothesis?: string;
-  summary_text?: string;
+  analysis_text?: string;
   _key?: string; // Internal key for deduplication (not sent to API)
 };
 
-type AvailableTopic = {
-  topic_id: string;
-  latest_name: string | null;
-  latest_description: string | null;
-  latest_user_hypothesis: string | null;
+type AvailableHypothesis = {
+  hypothesis_id: string;
+  hypothesis_text: string | null;
+  description: string | null;
+  reference_url: string | null;
+  reference_type: string | null;
 };
 
-type SegmentTopic = {
-  topic_id: string;
-  name: string;
+type SegmentHypothesis = {
+  hypothesis_id: string;
+  hypothesis_text: string | null;
   description: string | null;
-  user_hypothesis: string | null;
-  summary_text: string | null;
+  reference_url: string | null;
+  reference_type: string | null;
+  verdict: string | null;
+  analysis_text: string | null;
   created_at: string;
 };
 
-// Represents a topic being edited, including its AI-generated POV
-type StagedChange = TopicSuggestion & {
+// Represents a hypothesis being edited, including its AI-generated POV
+type StagedChange = HypothesisSuggestion & {
+  verdict?: string;
   pov_summary?: string;
   pov_id?: string;
-  editingField?: 'description' | 'user_hypothesis' | null;
-  isDirty?: boolean; // Track if user has modified this topic
+  editingField?: 'description' | 'hypothesis_text' | null;
+  isDirty?: boolean; // Track if user has modified this hypothesis
   markedForSave?: boolean; // Explicitly marked for saving
+  reference_url?: string | null;
+  reference_type?: string | null;
+  includeFullReference?: boolean; // User toggle for deep analysis
+  analysisMode?: 'summary' | 'full_reference'; // Track which mode was used
 };
 
 // --- Page Component ---
@@ -53,15 +60,15 @@ export default function SegmentAnalyzePage() {
 
   // --- State Management ---
   const [workbenchData, setWorkbenchData] = useState<SegmentWorkbenchContent | null>(null);
-  const [existingTopics, setExistingTopics] = useState<SegmentTopic[]>([]);
-  const [aiSuggestions, setAiSuggestions] = useState<TopicSuggestion[]>([]);
-  const [linkedTopics, setLinkedTopics] = useState<TopicSuggestion[]>([]);
+  const [existingHypotheses, setExistingHypotheses] = useState<SegmentHypothesis[]>([]);
+  const [aiSuggestions, setAiSuggestions] = useState<HypothesisSuggestion[]>([]);
+  const [linkedHypotheses, setLinkedHypotheses] = useState<HypothesisSuggestion[]>([]);
   const [stagedChanges, setStagedChanges] = useState<Record<string, StagedChange>>({});
-  const [activeTopicKey, setActiveTopicKey] = useState<string | null>(null);
+  const [activeHypothesisKey, setActiveHypothesisKey] = useState<string | null>(null);
 
   // Modal State
-  const [isTopicModalOpen, setTopicModalOpen] = useState(false);
-  const [availableTopics, setAvailableTopics] = useState<AvailableTopic[]>([]);
+  const [isHypothesisModalOpen, setHypothesisModalOpen] = useState(false);
+  const [availableHypotheses, setAvailableHypotheses] = useState<AvailableHypothesis[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
@@ -72,54 +79,51 @@ export default function SegmentAnalyzePage() {
   const [error, setError] = useState<string | null>(null);
 
   // Memoized derived state
-  const activeEditingTopic = useMemo(() => {
-    if (!activeTopicKey) return null;
-    return stagedChanges[activeTopicKey];
-  }, [activeTopicKey, stagedChanges]);
+  const activeEditingHypothesis = useMemo(() => {
+    if (!activeHypothesisKey) return null;
+    return stagedChanges[activeHypothesisKey];
+  }, [activeHypothesisKey, stagedChanges]);
 
-  // Update logic to actually include linkedTopics in the main list
-  // Re-define allTopics useMemo correctly:
-  const allTopics = useMemo(() => {
-    const topicMap = new Map<string, TopicSuggestion>();
+  // Combine all hypotheses into a single list
+  const allHypotheses = useMemo(() => {
+    const hypothesisMap = new Map<string, HypothesisSuggestion>();
 
-    // 1. Existing Topics (from DB for this segment)
-    existingTopics.forEach(t => {
-      topicMap.set(t.topic_id, {
-        topic_id: t.topic_id,
-        name: t.name,
+    // 1. Existing Hypotheses (from DB for this segment)
+    existingHypotheses.forEach(h => {
+      hypothesisMap.set(h.hypothesis_id, {
+        hypothesis_id: h.hypothesis_id,
+        hypothesis_text: h.hypothesis_text || '',
         source: 'existing',
-        description: t.description || undefined,
-        user_hypothesis: t.user_hypothesis || undefined,
-        summary_text: t.summary_text || undefined,
-        _key: t.topic_id,
+        description: h.description || undefined,
+        analysis_text: h.analysis_text || undefined,
+        _key: h.hypothesis_id,
       });
     });
 
-    // 2. Linked Topics (manually selected this session)
-    linkedTopics.forEach(t => {
-      // Only add if not already existing
-      if (!topicMap.has(t.topic_id!)) {
-        topicMap.set(t.topic_id!, t);
+    // 2. Linked Hypotheses (manually selected this session)
+    linkedHypotheses.forEach(h => {
+      if (!hypothesisMap.has(h.hypothesis_id!)) {
+        hypothesisMap.set(h.hypothesis_id!, h);
       }
     });
 
     // 3. AI Suggestions
-    let newTopicCounter = 0;
-    aiSuggestions.forEach(t => {
-      const key = t.topic_id || `new-${newTopicCounter++}-${t.name}`;
-      if (!t.topic_id) {
-        if (!topicMap.has(key)) topicMap.set(key, { ...t, _key: key });
+    let newHypothesisCounter = 0;
+    aiSuggestions.forEach(h => {
+      const key = h.hypothesis_id || `new-${newHypothesisCounter++}-${h.hypothesis_text.slice(0, 20)}`;
+      if (!h.hypothesis_id) {
+        if (!hypothesisMap.has(key)) hypothesisMap.set(key, { ...h, _key: key });
       } else {
-        if (!topicMap.has(t.topic_id)) topicMap.set(t.topic_id, { ...t, _key: t.topic_id });
+        if (!hypothesisMap.has(h.hypothesis_id)) hypothesisMap.set(h.hypothesis_id, { ...h, _key: h.hypothesis_id });
       }
     });
 
-    return Array.from(topicMap.values());
-  }, [existingTopics, aiSuggestions, linkedTopics]);
+    return Array.from(hypothesisMap.values());
+  }, [existingHypotheses, aiSuggestions, linkedHypotheses]);
 
-  // Count topics marked for save
-  const topicsToSaveCount = useMemo(() => {
-    return Object.values(stagedChanges).filter(t => t.markedForSave).length;
+  // Count hypotheses marked for save
+  const hypothesesToSaveCount = useMemo(() => {
+    return Object.values(stagedChanges).filter(h => h.markedForSave).length;
   }, [stagedChanges]);
 
   // --- Data Fetching ---
@@ -133,22 +137,22 @@ export default function SegmentAnalyzePage() {
         const segmentData: SegmentWorkbenchContent = await segmentRes.json();
         setWorkbenchData(segmentData);
 
-        // Fetch existing topics from topics_history (no AI call)
-        const existingRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics`);
-        if (!existingRes.ok) throw new Error('Failed to fetch existing topics.');
-        const existingData: SegmentTopic[] = await existingRes.json();
-        setExistingTopics(existingData);
+        // Fetch existing hypotheses linked to this segment
+        const existingRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/hypotheses`);
+        if (!existingRes.ok) throw new Error('Failed to fetch existing hypotheses.');
+        const existingData: SegmentHypothesis[] = await existingRes.json();
+        setExistingHypotheses(existingData);
 
-        // Initialize staged changes for existing topics
-        const initialStagedChanges = existingData.reduce((acc: Record<string, StagedChange>, topic: SegmentTopic) => {
-          const key = topic.topic_id;
+        // Initialize staged changes for existing hypotheses
+        const initialStagedChanges = existingData.reduce((acc: Record<string, StagedChange>, hyp: SegmentHypothesis) => {
+          const key = hyp.hypothesis_id;
           acc[key] = {
-            topic_id: topic.topic_id,
-            name: topic.name,
+            hypothesis_id: hyp.hypothesis_id,
+            hypothesis_text: hyp.hypothesis_text || '',
             source: 'existing',
-            description: topic.description || undefined,
-            user_hypothesis: topic.user_hypothesis || undefined,
-            summary_text: topic.summary_text || undefined,
+            description: hyp.description || undefined,
+            analysis_text: hyp.analysis_text || undefined,
+            verdict: hyp.verdict || undefined,
             isDirty: false,
             markedForSave: false,
           };
@@ -169,8 +173,8 @@ export default function SegmentAnalyzePage() {
     if (!segmentId) return;
     setIsGeneratingSuggestions(true);
     try {
-      const suggestRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics:suggest`, { method: 'POST' });
-      if (!suggestRes.ok) throw new Error('Failed to fetch topic suggestions.');
+      const suggestRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/hypotheses:suggest`, { method: 'POST' });
+      if (!suggestRes.ok) throw new Error('Failed to fetch hypothesis suggestions.');
       const suggestData = await suggestRes.json();
 
       setAiSuggestions(suggestData.suggestions);
@@ -178,11 +182,11 @@ export default function SegmentAnalyzePage() {
       // Add AI suggestions to staged changes with unique keys
       setStagedChanges(prev => {
         const updated = { ...prev };
-        let newTopicCounter = 0;
-        suggestData.suggestions.forEach((topic: TopicSuggestion) => {
-          const key = topic.topic_id || `new-${newTopicCounter++}-${topic.name}`;
+        let newHypothesisCounter = 0;
+        suggestData.suggestions.forEach((hyp: HypothesisSuggestion) => {
+          const key = hyp.hypothesis_id || `new-${newHypothesisCounter++}-${hyp.hypothesis_text.slice(0, 20)}`;
           if (!updated[key]) {
-            updated[key] = { ...topic, _key: key, isDirty: false, markedForSave: false };
+            updated[key] = { ...hyp, _key: key, isDirty: false, markedForSave: false };
           }
         });
         return updated;
@@ -198,18 +202,17 @@ export default function SegmentAnalyzePage() {
   const handleCheckboxChange = (key: string, checked: boolean) => {
     if (checked) {
       // Only one checkbox can be checked at a time - uncheck others first
-      // Unmark previous selection if any
-      if (activeTopicKey && activeTopicKey !== key) {
+      if (activeHypothesisKey && activeHypothesisKey !== key) {
         setStagedChanges(prev => ({
           ...prev,
-          [activeTopicKey]: {
-            ...prev[activeTopicKey],
+          [activeHypothesisKey]: {
+            ...prev[activeHypothesisKey],
             markedForSave: false
           },
         }));
       }
-      // Set new active topic
-      setActiveTopicKey(key);
+      // Set new active hypothesis
+      setActiveHypothesisKey(key);
       // Mark for save when checking
       setStagedChanges(prev => ({
         ...prev,
@@ -220,7 +223,7 @@ export default function SegmentAnalyzePage() {
       }));
     } else {
       // Unchecking clears selection and hides edit form
-      setActiveTopicKey(null);
+      setActiveHypothesisKey(null);
       // Unmark for save when unchecking
       setStagedChanges(prev => ({
         ...prev,
@@ -233,52 +236,41 @@ export default function SegmentAnalyzePage() {
   };
 
   const handleStagedChange = (field: keyof StagedChange, value: string | null) => {
-    if (!activeTopicKey) return;
+    if (!activeHypothesisKey) return;
     setStagedChanges(prev => ({
       ...prev,
-      [activeTopicKey]: {
-        ...prev[activeTopicKey],
+      [activeHypothesisKey]: {
+        ...prev[activeHypothesisKey],
         [field]: value,
         // Mark as dirty when user edits content fields
-        isDirty: ['name', 'description', 'user_hypothesis', 'summary_text'].includes(field)
+        isDirty: ['hypothesis_text', 'description', 'analysis_text'].includes(field)
           ? true
-          : prev[activeTopicKey]?.isDirty,
+          : prev[activeHypothesisKey]?.isDirty,
       },
     }));
   };
 
-  const toggleMarkedForSave = (key: string) => {
-    setStagedChanges(prev => ({
-      ...prev,
-      [key]: {
-        ...prev[key],
-        markedForSave: !prev[key]?.markedForSave
-      },
-    }));
-  };
-
-  // Refresh existing topics after save
-  const refreshExistingTopics = async () => {
+  // Refresh existing hypotheses after save
+  const refreshExistingHypotheses = async () => {
     if (!segmentId) return;
     try {
-      const existingRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics`);
+      const existingRes = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/hypotheses`);
       if (existingRes.ok) {
-        const existingData: SegmentTopic[] = await existingRes.json();
-        setExistingTopics(existingData);
+        const existingData: SegmentHypothesis[] = await existingRes.json();
+        setExistingHypotheses(existingData);
 
         // Update staged changes with refreshed data
         setStagedChanges(prev => {
           const updated = { ...prev };
-          existingData.forEach((topic: SegmentTopic) => {
-            const key = topic.topic_id;
+          existingData.forEach((hyp: SegmentHypothesis) => {
+            const key = hyp.hypothesis_id;
             if (updated[key]) {
-              // Update existing staged change with fresh data, preserve markedForSave and isDirty
               updated[key] = {
                 ...updated[key],
-                name: topic.name,
-                description: topic.description || undefined,
-                user_hypothesis: topic.user_hypothesis || undefined,
-                summary_text: topic.summary_text || undefined,
+                hypothesis_text: hyp.hypothesis_text || '',
+                description: hyp.description || undefined,
+                analysis_text: hyp.analysis_text || undefined,
+                verdict: hyp.verdict || undefined,
               };
             }
           });
@@ -286,12 +278,12 @@ export default function SegmentAnalyzePage() {
         });
       }
     } catch (err) {
-      console.error('Failed to refresh existing topics:', err);
+      console.error('Failed to refresh existing hypotheses:', err);
     }
   };
 
   const handleGeneratePov = async () => {
-    if (!activeEditingTopic) return;
+    if (!activeEditingHypothesis) return;
     setIsGeneratingPov(true);
     try {
       const response = await fetch('http://127.0.0.1:8000/analysis:generate_pov', {
@@ -299,19 +291,18 @@ export default function SegmentAnalyzePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segment_id: segmentId,
-          topic_name: activeEditingTopic.name,
-          description: activeEditingTopic.description,
-          user_hypothesis: activeEditingTopic.user_hypothesis,
+          hypothesis_text: activeEditingHypothesis.hypothesis_text,
+          description: activeEditingHypothesis.description,
         }),
       });
       if (!response.ok) throw new Error('Failed to generate Analyst POV.');
       const data = await response.json();
 
-      if (activeTopicKey) {
+      if (activeHypothesisKey) {
         setStagedChanges(prev => ({
           ...prev,
-          [activeTopicKey]: {
-            ...prev[activeTopicKey],
+          [activeHypothesisKey]: {
+            ...prev[activeHypothesisKey],
             pov_summary: data.pov_summary,
             pov_id: data.pov_id,
             isDirty: true,
@@ -326,7 +317,7 @@ export default function SegmentAnalyzePage() {
   };
 
   const handleCheckHypothesis = async () => {
-    if (!activeEditingTopic) return;
+    if (!activeEditingHypothesis) return;
     setIsCheckingHypothesis(true);
     try {
       const response = await fetch('http://127.0.0.1:8000/analysis:check_hypothesis', {
@@ -334,19 +325,23 @@ export default function SegmentAnalyzePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           segment_text: workbenchData?.segment.text || "",
-          topic_name: activeEditingTopic.name,
-          user_hypothesis: activeEditingTopic.user_hypothesis,
+          hypothesis_text: activeEditingHypothesis.hypothesis_text,
+          hypothesis_description: activeEditingHypothesis.description,
+          reference_url: activeEditingHypothesis.reference_url,
+          include_full_reference: activeEditingHypothesis.includeFullReference || false,
+          hypothesis_id: activeEditingHypothesis.hypothesis_id || null,
         }),
       });
       if (!response.ok) throw new Error('Failed to run hypothesis analysis.');
       const data = await response.json();
 
-      if (activeTopicKey) {
+      if (activeHypothesisKey) {
         setStagedChanges(prev => ({
           ...prev,
-          [activeTopicKey]: {
-            ...prev[activeTopicKey],
-            summary_text: data.analysis_text,
+          [activeHypothesisKey]: {
+            ...prev[activeHypothesisKey],
+            analysis_text: data.analysis_text,
+            analysisMode: activeEditingHypothesis.includeFullReference ? 'full_reference' : 'summary',
             isDirty: true,
           },
         }));
@@ -359,11 +354,11 @@ export default function SegmentAnalyzePage() {
   };
 
   const handleFinalSave = async () => {
-    // Only save topics that are marked for save
-    const topicsToSave = Object.values(stagedChanges).filter(t => t.markedForSave);
+    // Only save hypotheses that are marked for save
+    const hypothesesToSave = Object.values(stagedChanges).filter(h => h.markedForSave);
 
-    if (topicsToSave.length === 0) {
-      alert('No topics selected for saving. Check the boxes next to topics you want to save.');
+    if (hypothesesToSave.length === 0) {
+      alert('No hypotheses selected for saving. Check the boxes next to hypotheses you want to save.');
       return;
     }
 
@@ -371,29 +366,27 @@ export default function SegmentAnalyzePage() {
     setSaveSuccess(false);
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/topics`, {
+      const response = await fetch(`http://127.0.0.1:8000/segments/${segmentId}/evidence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          topics: topicsToSave.map(t => ({
-            topic_id: (t.topic_id && t.topic_id.trim()) || null,  // Ensure null for new topics (empty strings become null)
-            name: t.name,
-            description: t.description || null,
-            user_hypothesis: t.user_hypothesis || null,
-            summary_text: t.summary_text || null,
-            pov_id: t.pov_id || null,
+          evidence: hypothesesToSave.map(h => ({
+            hypothesis_id: (h.hypothesis_id && h.hypothesis_id.trim()) || null,
+            hypothesis_text: h.hypothesis_text,
+            description: h.description || null,
+            verdict: h.verdict || null,
+            analysis_text: h.analysis_text || null,
+            pov_id: h.pov_id || null,
           }))
         }),
       });
 
       if (!response.ok) {
-        // Try to get error details from response
         let errorMessage = 'Failed to save changes.';
         try {
           const errorData = await response.json();
           errorMessage = errorData.detail || errorMessage;
         } catch {
-          // Response might not be JSON (e.g., 500 error)
           errorMessage = `Server error: ${response.status} ${response.statusText}`;
         }
         throw new Error(errorMessage);
@@ -402,7 +395,7 @@ export default function SegmentAnalyzePage() {
       // Success! (204 No Content)
       setSaveSuccess(true);
 
-      // Clear the saved topics from the list after successful save
+      // Clear the saved hypotheses from the list after successful save
       setStagedChanges(prev => {
         const updated = { ...prev };
         Object.keys(updated).forEach(key => {
@@ -414,13 +407,13 @@ export default function SegmentAnalyzePage() {
       });
 
       // Clear selection (uncheck checkbox)
-      setActiveTopicKey(null);
+      setActiveHypothesisKey(null);
 
-      // Refresh existing topics to show updated data
-      await refreshExistingTopics();
+      // Refresh existing hypotheses to show updated data
+      await refreshExistingHypotheses();
 
-      // Clear linked topics that have been saved (they are now strictly "existing")
-      setLinkedTopics(prev => prev.filter(t => !topicsToSave.find(saved => saved.topic_id === t.topic_id)));
+      // Clear linked hypotheses that have been saved
+      setLinkedHypotheses(prev => prev.filter(h => !hypothesesToSave.find(saved => saved.hypothesis_id === h.hypothesis_id)));
 
       // Show success message briefly
       setTimeout(() => {
@@ -436,65 +429,73 @@ export default function SegmentAnalyzePage() {
     }
   };
 
-  const fetchAvailableTopics = async () => {
+  const fetchAvailableHypotheses = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/topics'); // Assuming an endpoint for all available topics
-      if (!response.ok) throw new Error('Failed to fetch available topics.');
-      const data: AvailableTopic[] = await response.json();
-      setAvailableTopics(data);
+      const response = await fetch('http://127.0.0.1:8000/hypotheses');
+      if (!response.ok) throw new Error('Failed to fetch available hypotheses.');
+      const data = await response.json();
+      // Map the API response to our expected format
+      setAvailableHypotheses(data.map((h: any) => ({
+        hypothesis_id: h.hypothesis_id,
+        hypothesis_text: h.hypothesis_text,
+        description: h.description,
+        reference_url: h.reference_url,
+        reference_type: h.reference_type,
+      })));
     } catch (err) {
-      console.error('Error fetching available topics:', err);
-      alert('Failed to load available topics for linking.');
+      console.error('Error fetching available hypotheses:', err);
+      alert('Failed to load available hypotheses for linking.');
     }
   };
 
   const handleLinkExisting = () => {
-    setTopicModalOpen(true);
-    fetchAvailableTopics();
+    setHypothesisModalOpen(true);
+    fetchAvailableHypotheses();
   };
 
-  const handleSelectTopic = (topic: AvailableTopic) => {
-    // Check if this topic is already in existingTopics or linkedTopics
-    const isAlreadyPresent = existingTopics.some(t => t.topic_id === topic.topic_id) ||
-      linkedTopics.some(t => t.topic_id === topic.topic_id);
+  const handleSelectHypothesis = (hyp: AvailableHypothesis) => {
+    // Check if this hypothesis is already linked
+    const isAlreadyPresent = existingHypotheses.some(h => h.hypothesis_id === hyp.hypothesis_id) ||
+      linkedHypotheses.some(h => h.hypothesis_id === hyp.hypothesis_id);
 
     if (isAlreadyPresent) {
-      alert('This topic is already associated with this segment.');
-      setTopicModalOpen(false);
+      alert('This hypothesis is already associated with this segment.');
+      setHypothesisModalOpen(false);
       return;
     }
 
-    const newLinkedTopic: StagedChange = {
-      topic_id: topic.topic_id,
-      name: topic.latest_name || 'Unnamed Topic',
-      description: topic.latest_description || undefined,
-      user_hypothesis: topic.latest_user_hypothesis || undefined, // Pre-fill with latest hypothesis
-      summary_text: undefined,
+    const newLinkedHypothesis: StagedChange = {
+      hypothesis_id: hyp.hypothesis_id,
+      hypothesis_text: hyp.hypothesis_text || 'Untitled Hypothesis',
+      description: hyp.description || undefined,
+      reference_url: hyp.reference_url || undefined,
+      reference_type: hyp.reference_type || undefined,
+      analysis_text: undefined,
       pov_id: undefined,
       pov_summary: undefined,
-      markedForSave: true, // Mark for save by default when linking
-      isDirty: true, // It's "dirty" because it's new to this segment
-      _key: topic.topic_id,
+      markedForSave: true,
+      isDirty: true,
+      _key: hyp.hypothesis_id,
       source: 'Linked',
     };
 
-    setLinkedTopics(prev => [...prev, newLinkedTopic]);
+    setLinkedHypotheses(prev => [...prev, newLinkedHypothesis]);
 
-    // CRITICAL: Add to stagedChanges so the edit form has data to display
+    // Add to stagedChanges so the edit form has data to display
     setStagedChanges(prev => ({
       ...prev,
-      [topic.topic_id]: newLinkedTopic
+      [hyp.hypothesis_id]: newLinkedHypothesis
     }));
 
-    setTopicModalOpen(false);
-    setActiveTopicKey(topic.topic_id); // Automatically select the newly linked topic
+    setHypothesisModalOpen(false);
+    setActiveHypothesisKey(hyp.hypothesis_id);
   };
 
 
   // --- Section State ---
   const [sections, setSections] = useState({
-    selectTopics: true,
-    assessTopic: true,
+    selectHypotheses: true,
+    assessHypothesis: true,
     segmentContent: true
   });
 
@@ -510,64 +511,64 @@ export default function SegmentAnalyzePage() {
     <main className="flex min-h-screen flex-col p-8 lg:p-12 bg-gray-50 space-y-6 relative">
       {/* Header */}
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">Segment & Topic Analyzer</h1>
+        <h1 className="text-2xl lg:text-3xl font-bold text-gray-800">Segment & Hypothesis Analyzer</h1>
       </div>
 
       <div className="space-y-6 max-w-5xl mx-auto w-full">
 
-        {/* --- Section 1: Select Topics --- */}
+        {/* --- Section 1: Select Hypotheses --- */}
         <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
           <div
             className="px-4 py-3 bg-gray-100 border-b border-gray-200 flex justify-between items-center cursor-pointer select-none"
-            onClick={() => toggleSection('selectTopics')}
+            onClick={() => toggleSection('selectHypotheses')}
           >
             <h2 className="text-lg font-semibold text-gray-700 flex items-center gap-2">
-              <span className={`transform transition-transform ${sections.selectTopics ? 'rotate-90' : ''}`}>▶</span>
-              1. Select Topics
+              <span className={`transform transition-transform ${sections.selectHypotheses ? 'rotate-90' : ''}`}>▶</span>
+              1. Select Hypotheses
             </h2>
           </div>
 
-          {sections.selectTopics && (
+          {sections.selectHypotheses && (
             <div className="p-4 space-y-4">
               {/* Toolbar Row */}
               <div className="flex gap-4 items-center">
                 <button
                   onClick={handleGenerateSuggestions}
-                  disabled={isGeneratingSuggestions || activeTopicKey !== null}
+                  disabled={isGeneratingSuggestions || activeHypothesisKey !== null}
                   className="flex-1 py-2 text-sm font-medium text-white bg-indigo-600 rounded shadow-sm hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed transition-colors"
                 >
-                  {isGeneratingSuggestions ? 'Generating Suggestions...' : 'Generate AI Topic Suggestions'}
+                  {isGeneratingSuggestions ? 'Generating Suggestions...' : 'Generate AI Hypothesis Suggestions'}
                 </button>
                 <button
                   onClick={handleLinkExisting}
                   className="px-6 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded shadow-sm hover:bg-gray-50 transition-colors"
                 >
-                  Link Existing Topic
+                  Link Existing Hypothesis
                 </button>
               </div>
 
-              {/* Topics Table */}
+              {/* Hypotheses Table */}
               <div className="bg-white rounded border border-gray-200 overflow-hidden">
                 <table className="min-w-full text-sm divide-y divide-gray-200">
                   <thead className="bg-gray-50 text-xs uppercase font-medium text-gray-500">
                     <tr>
                       <th className="px-4 py-3 text-left w-12">Save</th>
-                      <th className="px-4 py-3 text-left">Topic Name</th>
+                      <th className="px-4 py-3 text-left">Hypothesis</th>
                       <th className="px-4 py-3 text-left w-32">Source</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {allTopics.length === 0 ? (
+                    {allHypotheses.length === 0 ? (
                       <tr>
                         <td colSpan={3} className="px-4 py-8 text-center text-gray-500 italic">
-                          No topics yet. Generate suggestions or link an existing one to start.
+                          No hypotheses yet. Generate suggestions or link an existing one to start.
                         </td>
                       </tr>
                     ) : (
-                      allTopics.map((topic) => {
-                        const key = topic._key || topic.topic_id || `new-${topic.name}`;
+                      allHypotheses.map((hyp) => {
+                        const key = hyp._key || hyp.hypothesis_id || `new-${hyp.hypothesis_text.slice(0, 20)}`;
                         const staged = stagedChanges[key];
-                        const isActive = activeTopicKey === key;
+                        const isActive = activeHypothesisKey === key;
                         const isDirty = staged?.isDirty;
 
                         return (
@@ -579,18 +580,6 @@ export default function SegmentAnalyzePage() {
                                 ? 'bg-yellow-50 hover:bg-yellow-100'
                                 : 'hover:bg-gray-50'
                               }`}
-                            onClick={() => {
-                              // Checking the box handles selection now, but clicking row can also select?
-                              // Let's keep checkbox as primary for consistency with "Save" intent, 
-                              // but maybe row click sets active without marking for save?
-                              // Current logic: Checkbox checks => Selects & Marks for Save.
-                              // Let's stick to Checkbox for "Action", but row click just to "View"?
-                              // For now, let's keep interactions simple. Row click does nothing unless we add it.
-                              // Actually, user might want to edit without saving? 
-                              // Let's make row click trigger selection (but not mark for save) if we want?
-                              // The previous code didn't have row click handler on TR, only checkbox.
-                              // Wait, the previous code had NO onclick on TR, just hover.
-                            }}
                           >
                             <td className="px-4 py-3">
                               <input
@@ -601,11 +590,12 @@ export default function SegmentAnalyzePage() {
                               />
                             </td>
                             <td className="px-4 py-3 font-medium text-gray-800">
-                              {staged?.name || topic.name}
+                              {(staged?.hypothesis_text || hyp.hypothesis_text).slice(0, 100)}
+                              {(staged?.hypothesis_text || hyp.hypothesis_text).length > 100 && '...'}
                               {isDirty && <span className="ml-2 text-xs text-yellow-600 font-normal">● Unsaved</span>}
                             </td>
                             <td className="px-4 py-3 text-gray-500">
-                              {topic.source}
+                              {hyp.source}
                             </td>
                           </tr>
                         );
@@ -615,27 +605,27 @@ export default function SegmentAnalyzePage() {
                 </table>
               </div>
               <p className="text-xs text-gray-500">
-                Tip: Check the box to select a topic for analysis and editing.
+                Tip: Check the box to select a hypothesis for analysis and editing.
               </p>
             </div>
           )}
         </div>
 
-        {/* --- Section 2: Assess Topic --- */}
+        {/* --- Section 2: Assess Hypothesis --- */}
         <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
           <div className="px-4 py-3 bg-gray-100 border-b border-gray-200 flex justify-between items-center">
             <div
               className="flex items-center gap-2 cursor-pointer select-none"
-              onClick={() => toggleSection('assessTopic')}
+              onClick={() => toggleSection('assessHypothesis')}
             >
               <h2 className="text-lg font-semibold text-gray-900">
-                <span className={`inline-block transform transition-transform ${sections.assessTopic ? 'rotate-90' : ''}`}>▶</span>
-                2. Assess Topic
+                <span className={`inline-block transform transition-transform ${sections.assessHypothesis ? 'rotate-90' : ''}`}>▶</span>
+                2. Assess Hypothesis
               </h2>
             </div>
 
             {/* Header Action: Save Button */}
-            {topicsToSaveCount > 0 && (
+            {hypothesesToSaveCount > 0 && (
               <div className="flex items-center gap-3">
                 {saveSuccess && (
                   <span className="text-green-600 font-medium text-sm animate-pulse">✓ Saved!</span>
@@ -645,100 +635,138 @@ export default function SegmentAnalyzePage() {
                   disabled={isSaving}
                   className="px-4 py-1.5 text-sm font-semibold text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
                 >
-                  {isSaving ? 'Saving...' : `Save Changes (${topicsToSaveCount})`}
+                  {isSaving ? 'Saving...' : `Save Evidence (${hypothesesToSaveCount})`}
                 </button>
               </div>
             )}
           </div>
 
-          {sections.assessTopic && (
+          {sections.assessHypothesis && (
             <div className="p-6">
-              {activeEditingTopic ? (
+              {activeEditingHypothesis ? (
                 <div className="space-y-6">
-                  {/* Topic Name */}
+                  {/* Hypothesis Text */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-900 mb-1">Topic Name</label>
-                    <input
-                      type="text"
-                      value={activeEditingTopic.name || ''}
-                      onChange={e => handleStagedChange('name', e.target.value)}
-                      className="block w-full px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
-                    />
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-sm font-medium text-gray-900">Hypothesis</label>
+                      <button
+                        onClick={() => handleStagedChange('editingField', activeEditingHypothesis.editingField === 'hypothesis_text' ? null : 'hypothesis_text')}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                      >
+                        {activeEditingHypothesis.editingField === 'hypothesis_text' ? 'Done' : 'Edit'}
+                      </button>
+                    </div>
+                    {activeEditingHypothesis.editingField === 'hypothesis_text' ? (
+                      <textarea
+                        value={activeEditingHypothesis.hypothesis_text || ''}
+                        onChange={e => handleStagedChange('hypothesis_text', e.target.value)}
+                        rows={3}
+                        className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm text-black"
+                        placeholder="Enter your hypothesis..."
+                      />
+                    ) : (
+                      <div
+                        className="block w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[80px] prose prose-sm max-w-none hover:bg-gray-100 cursor-text transition-colors text-black"
+                        onClick={() => handleStagedChange('editingField', 'hypothesis_text')}
+                      >
+                        <ReactMarkdown>{activeEditingHypothesis.hypothesis_text || '*No hypothesis text.*'}</ReactMarkdown>
+                      </div>
+                    )}
                   </div>
 
                   {/* Description Field */}
                   <div>
                     <div className="flex justify-between items-center mb-1">
-                      <label className="block text-sm font-medium text-gray-900">Description (Markdown)</label>
+                      <label className="block text-sm font-medium text-gray-900">Context / Description (Markdown)</label>
                       <button
-                        onClick={() => handleStagedChange('editingField', activeEditingTopic.editingField === 'description' ? null : 'description')}
+                        onClick={() => handleStagedChange('editingField', activeEditingHypothesis.editingField === 'description' ? null : 'description')}
                         className="text-xs font-medium text-blue-600 hover:text-blue-800"
                       >
-                        {activeEditingTopic.editingField === 'description' ? 'Done' : 'Edit'}
+                        {activeEditingHypothesis.editingField === 'description' ? 'Done' : 'Edit'}
                       </button>
                     </div>
-                    {activeEditingTopic.editingField === 'description' ? (
+                    {activeEditingHypothesis.editingField === 'description' ? (
                       <textarea
-                        value={activeEditingTopic.description || ''}
+                        value={activeEditingHypothesis.description || ''}
                         onChange={e => handleStagedChange('description', e.target.value)}
                         rows={5}
                         className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm text-black"
-                        placeholder="Enter markdown description..."
+                        placeholder="Enter context or description..."
                       />
                     ) : (
                       <div
                         className="block w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[100px] prose prose-sm max-w-none hover:bg-gray-100 cursor-text transition-colors text-black"
                         onClick={() => handleStagedChange('editingField', 'description')}
                       >
-                        <ReactMarkdown>{activeEditingTopic.description || '*No description.*'}</ReactMarkdown>
+                        <ReactMarkdown>{activeEditingHypothesis.description || '*No description.*'}</ReactMarkdown>
                       </div>
                     )}
                   </div>
 
-                  {/* User Hypothesis Field */}
-                  <div>
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-sm font-medium text-gray-900">User Hypothesis (Markdown)</label>
-                      <button
-                        onClick={() => handleStagedChange('editingField', activeEditingTopic.editingField === 'user_hypothesis' ? null : 'user_hypothesis')}
-                        className="text-xs font-medium text-blue-600 hover:text-blue-800"
-                      >
-                        {activeEditingTopic.editingField === 'user_hypothesis' ? 'Done' : 'Edit'}
-                      </button>
-                    </div>
-                    {activeEditingTopic.editingField === 'user_hypothesis' ? (
-                      <textarea
-                        value={activeEditingTopic.user_hypothesis || ''}
-                        onChange={e => handleStagedChange('user_hypothesis', e.target.value)}
-                        rows={5}
-                        className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm text-black"
-                        placeholder="Enter markdown hypothesis..."
-                      />
-                    ) : (
-                      <div
-                        className="block w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[100px] prose prose-sm max-w-none hover:bg-gray-100 cursor-text transition-colors text-black"
-                        onClick={() => handleStagedChange('editingField', 'user_hypothesis')}
-                      >
-                        <ReactMarkdown>{activeEditingTopic.user_hypothesis || '*No hypothesis.*'}</ReactMarkdown>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Segment <> Topic Analysis */}
+                  {/* Segment <> Hypothesis Analysis */}
                   <div className="pt-6 border-t border-gray-200">
+                    {/* Reference Indicator */}
+                    {activeEditingHypothesis.reference_url && (
+                      <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="font-medium text-purple-900">📄 Based on:</span>
+                          <a 
+                            href={activeEditingHypothesis.reference_url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-purple-700 hover:text-purple-900 underline"
+                          >
+                            {activeEditingHypothesis.reference_type ? 
+                              `${activeEditingHypothesis.reference_type.charAt(0).toUpperCase() + activeEditingHypothesis.reference_type.slice(1)} reference` 
+                              : 'External reference'}
+                          </a>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex justify-between items-center mb-3">
-                      <label className="block text-sm font-medium text-gray-900">Segment &lt;&gt; Topic Analysis</label>
-                      <button
-                        onClick={handleCheckHypothesis}
-                        disabled={isCheckingHypothesis || !activeEditingTopic.user_hypothesis}
-                        className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {isCheckingHypothesis ? 'Analyzing...' : 'Run Hypothesis Analysis'}
-                      </button>
+                      <label className="block text-sm font-medium text-gray-900">Evidence Analysis</label>
+                      <div className="flex items-center gap-3">
+                        {/* Full Reference Toggle */}
+                        {activeEditingHypothesis.reference_url && (
+                          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer group">
+                            <input
+                              type="checkbox"
+                              checked={activeEditingHypothesis.includeFullReference || false}
+                              onChange={(e) => handleStagedChange('includeFullReference', e.target.checked)}
+                              className="w-4 h-4 text-purple-600 rounded border-gray-300 focus:ring-purple-500 cursor-pointer"
+                            />
+                            <span className="group-hover:text-gray-900" title="Include complete paper in analysis (uses more AI tokens, takes longer)">
+                              Use full reference document
+                            </span>
+                          </label>
+                        )}
+                        <button
+                          onClick={handleCheckHypothesis}
+                          disabled={isCheckingHypothesis || !activeEditingHypothesis.hypothesis_text}
+                          className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {isCheckingHypothesis ? 'Analyzing...' : 'Run Evidence Analysis'}
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Analysis Mode Badge */}
+                    {activeEditingHypothesis.analysisMode && activeEditingHypothesis.analysis_text && (
+                      <div className="mb-2">
+                        <span className={`inline-block px-2 py-1 text-xs rounded ${
+                          activeEditingHypothesis.analysisMode === 'full_reference' 
+                            ? 'bg-purple-100 text-purple-800' 
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          Analyzed with: {activeEditingHypothesis.analysisMode === 'full_reference' ? 'Full reference' : 'Summary only'}
+                        </span>
+                      </div>
+                    )}
+
                     <textarea
-                      value={activeEditingTopic.summary_text || ''}
-                      onChange={e => handleStagedChange('summary_text', e.target.value)}
+                      value={activeEditingHypothesis.analysis_text || ''}
+                      onChange={e => handleStagedChange('analysis_text', e.target.value)}
                       rows={6}
                       placeholder="Does this segment confirm, refute, or nuance the hypothesis?"
                       className="block w-full px-4 py-3 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm text-black"
@@ -758,13 +786,13 @@ export default function SegmentAnalyzePage() {
                       </button>
                     </div>
                     <div className="prose prose-sm max-w-none text-blue-800">
-                      <ReactMarkdown>{activeEditingTopic.pov_summary || '*Click button to generate Analyst POV.*'}</ReactMarkdown>
+                      <ReactMarkdown>{activeEditingHypothesis.pov_summary || '*Click button to generate Analyst POV.*'}</ReactMarkdown>
                     </div>
                   </div>
                 </div>
               ) : (
                 <div className="py-12 bg-gray-50 rounded border border-dashed border-gray-300 text-center">
-                  <p className="text-gray-500">Select a topic from "Select Topics" above to assess it here.</p>
+                  <p className="text-gray-500">Select a hypothesis from &quot;Select Hypotheses&quot; above to assess it here.</p>
                 </div>
               )}
             </div>
@@ -792,45 +820,46 @@ export default function SegmentAnalyzePage() {
         </div>
       </div>
 
-      {/* --- Topic Selection Modal --- */}
-      {isTopicModalOpen && (
+      {/* --- Hypothesis Selection Modal --- */}
+      {isHypothesisModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
-              <h3 className="text-lg font-bold text-gray-800">Link Existing Topic</h3>
-              <button onClick={() => setTopicModalOpen(false)} className="text-gray-500 hover:text-gray-700">✕</button>
+              <h3 className="text-lg font-bold text-gray-800">Link Existing Hypothesis</h3>
+              <button onClick={() => setHypothesisModalOpen(false)} className="text-gray-500 hover:text-gray-700">✕</button>
             </div>
 
             <div className="p-4 flex-1 overflow-y-auto">
               <input
                 type="text"
-                placeholder="Search topics..."
+                placeholder="Search hypotheses..."
                 className="w-full px-3 py-2 border rounded mb-4"
-                onChange={(e) => {
-                  // Filter logic could be added here or strictly handled by viewing the list
-                  // For now, let's just rely on visual scanning or native find,
-                  // but ideally we filter `availableTopics` based on this input.
-                  // Implementing simple filter:
-                  const term = e.target.value.toLowerCase();
-                  // Note: This would require holding a 'filter' state or pre-filtering the map below.
-                  // For simplicity in this edit, I'll skip complex search implementation and just list all.
-                }}
               />
 
-              {availableTopics.length === 0 ? (
-                <div className="text-center text-gray-500 py-8">Loading topics...</div>
+              {availableHypotheses.length === 0 ? (
+                <div className="text-center text-gray-500 py-8">Loading hypotheses...</div>
               ) : (
                 <div className="divide-y">
-                  {availableTopics.map(topic => (
+                  {availableHypotheses.map(hyp => (
                     <div
-                      key={topic.topic_id}
+                      key={hyp.hypothesis_id}
                       className="py-3 px-2 hover:bg-gray-50 cursor-pointer group flex justify-between items-center"
-                      onClick={() => handleSelectTopic(topic)}
+                      onClick={() => handleSelectHypothesis(hyp)}
                     >
                       <div>
-                        <div className="font-medium text-gray-800">{topic.latest_name || 'Unnamed Topic'}</div>
-                        {topic.latest_description && (
-                          <div className="text-sm text-gray-500 line-clamp-1">{topic.latest_description}</div>
+                        <div className="font-medium text-gray-800 flex items-center gap-2">
+                          <span>
+                            {(hyp.hypothesis_text || 'Untitled Hypothesis').slice(0, 80)}
+                            {(hyp.hypothesis_text || '').length > 80 && '...'}
+                          </span>
+                          {hyp.reference_url && (
+                            <span className="text-purple-600 text-xs px-1.5 py-0.5 bg-purple-100 rounded">
+                              {hyp.reference_type || 'ref'}
+                            </span>
+                          )}
+                        </div>
+                        {hyp.description && (
+                          <div className="text-sm text-gray-500 line-clamp-1">{hyp.description}</div>
                         )}
                       </div>
                       <button className="text-indigo-600 font-medium text-sm px-3 py-1 rounded bg-indigo-50 hover:bg-indigo-100 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -847,4 +876,3 @@ export default function SegmentAnalyzePage() {
     </main>
   );
 }
-

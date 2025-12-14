@@ -206,9 +206,8 @@ export default function DocumentsPage() {
           <table className="w-full divide-y divide-gray-200">
             {/* ... Columns ... */}
             <colgroup>
-              <col className="w-[140px]" /> {/* Increased from 110px to fit Edit button */}
+              <col className="w-[140px]" />
               <col className="w-[180px]" />
-              {/* ... */}
             </colgroup>
             {/* ... Thead ... */}
             <thead className="bg-gray-50">

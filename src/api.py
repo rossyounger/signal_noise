@@ -18,8 +18,13 @@ from pydantic import BaseModel, Field
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from src.html_offsets import find_html_fragment
-from src.analysis.suggestions import suggest_topics as run_suggest_topics, TopicSuggestionModel
+from src.analysis.suggestions import suggest_hypotheses as run_suggest_hypotheses, HypothesisSuggestionModel
 from src.analysis.hypothesis import check_hypothesis as run_check_hypothesis
+from src.analysis.reference_fetcher import (
+    fetch_reference_content, 
+    get_cached_reference, 
+    cache_reference_content
+)
 
 # Load .env from project root
 dotenv_path = Path(__file__).resolve().parent.parent / ".env"
@@ -81,89 +86,149 @@ def _require_pool() -> AsyncConnectionPool:
     return db_pool
 
 
-# --- Data Models (Refactored for Versioning) ---
+# --- Data Models (Hypothesis-Centric Architecture) ---
 
-class TopicHomeView(BaseModel):
-    """Represents the latest version of a topic for the home page."""
-    topic_id: str
-    latest_name: str | None
-    latest_description: str | None
-    latest_user_hypothesis: str | None
+class HypothesisView(BaseModel):
+    """Represents a hypothesis for the home page view."""
+    hypothesis_id: str
+    hypothesis_text: str | None
+    description: str | None
+    reference_url: str | None
+    reference_type: str | None
     last_updated_at: datetime
-    segment_id: str | None
+    evidence_count: int
+    latest_segment_id: str | None
+    latest_segment_text_preview: str | None
+    latest_document_id: str | None
+    latest_document_title: str | None
+
+
+class HypothesisEvidenceEntry(BaseModel):
+    """Represents a single evidence entry for a hypothesis."""
+    evidence_id: str
+    hypothesis_id: str
+    segment_id: str
+    verdict: str | None
+    analysis_text: str | None
+    authored_by: str
+    created_at: datetime
     segment_text_preview: str | None
     document_id: str | None
     document_title: str | None
 
+
+class SegmentHypothesis(BaseModel):
+    """Represents a hypothesis linked to a specific segment."""
+    hypothesis_id: str
+    hypothesis_text: str | None
+    description: str | None
+    reference_url: str | None
+    reference_type: str | None
+    verdict: str | None
+    analysis_text: str | None
+    created_at: datetime
+
+
+class HypothesisCreate(BaseModel):
+    hypothesis_text: str
+    description: str | None = None
+    reference_url: str | None = None
+    reference_type: str | None = None
+
+
+class HypothesisResponse(BaseModel):
+    hypothesis_id: str
+
+
+class HypothesisSuggestion(BaseModel):
+    hypothesis_id: str | None = None
+    hypothesis_text: str
+    source: str  # 'existing' | 'generated'
+    description: str | None = None
+    analysis_text: str | None = None  # Pre-filled analysis if available
+
+
+class SuggestHypothesesResponse(BaseModel):
+    suggestions: List[HypothesisSuggestion]
+
+
+class EvidencePayload(BaseModel):
+    hypothesis_id: str | None  # null if it's a new hypothesis
+    hypothesis_text: str
+    description: str | None
+    verdict: str | None = None  # 'confirms', 'refutes', 'nuances', 'irrelevant'
+    analysis_text: str | None = None
+    pov_id: str | None = None  # The ID of the draft POV run, if one was generated
+
+
+class SaveEvidenceRequest(BaseModel):
+    evidence: List[EvidencePayload]
+
+
 class GeneratePovRequest(BaseModel):
     segment_id: str
-    topic_name: str
+    hypothesis_text: str
     description: str | None
-    user_hypothesis: str | None
+
 
 class GeneratePovResponse(BaseModel):
     pov_summary: str
-    pov_id: str # The ID of the draft record in persona_topic_povs
+    pov_id: str  # The ID of the draft record in persona_topic_povs
+
 
 class CheckHypothesisRequest(BaseModel):
     segment_text: str
-    topic_name: str
-    user_hypothesis: str
+    hypothesis_text: str
+    hypothesis_description: str | None = None
+    reference_url: str | None = None
+    include_full_reference: bool = False
+    hypothesis_id: str | None = None
+
 
 class CheckHypothesisResponse(BaseModel):
     analysis_text: str
 
-class TopicHistoryPayload(BaseModel):
-    topic_id: str | None # null if it's a new topic
-    name: str
+
+class HypothesisReferenceResponse(BaseModel):
+    hypothesis_id: str
+    reference_url: str | None
+    reference_type: str | None
+    full_text: str | None
+    character_count: int | None
+    cached: bool
+
+
+# --- Questions Models (P2 Feature) ---
+
+class Question(BaseModel):
+    question_id: str
+    question_text: str
+    created_at: datetime
+    hypothesis_count: int
+
+
+class QuestionCreate(BaseModel):
+    question_text: str
+
+
+class QuestionResponse(BaseModel):
+    question_id: str
+
+
+class QuestionHypothesisLink(BaseModel):
+    hypothesis_id: str
+
+
+class QuestionHypothesis(BaseModel):
+    """Represents a hypothesis linked to a question."""
+    hypothesis_id: str
+    hypothesis_text: str | None
     description: str | None
-    user_hypothesis: str | None
-    summary_text: str | None = None # This is where the hypothesis analysis goes
-    pov_id: str | None # The ID of the draft POV run, if one was generated
-
-class SaveTopicsHistoryRequest(BaseModel):
-    topics: List[TopicHistoryPayload]
-
-class TopicSuggestion(BaseModel):
-    topic_id: str | None = None
-    name: str
-    source: str # 'existing' | 'generated'
-    description: str | None = None
-    user_hypothesis: str | None = None
-    summary_text: str | None = None # Pre-filled analysis if available
-
-class SuggestTopicsResponse(BaseModel):
-    suggestions: List[TopicSuggestion]
-
-class TopicCreate(BaseModel):
-    name: str | None = None  # Optional - name will be set when topic is first saved to history
-    description: str | None = None
-    user_hypothesis: str | None = None
-
-class TopicResponse(BaseModel):
-    topic_id: str
-
-class SegmentTopic(BaseModel):
-    """Represents a topic from topics_history for a specific segment."""
-    topic_id: str
-    name: str
-    description: str | None
-    user_hypothesis: str | None
-    summary_text: str | None
+    reference_url: str | None
+    reference_type: str | None
+    evidence_count: int
     created_at: datetime
 
-class TopicHistoryEntry(BaseModel):
-    """Represents a single entry in topics_history for topic history view."""
-    topic_id: str
-    segment_id: str
-    name: str
-    description: str | None
-    user_hypothesis: str | None
-    summary_text: str | None
-    created_at: datetime
-    segment_text_preview: str | None
-    document_id: str | None
-    document_title: str | None
 
 # --- Documents & Sources Models ---
 
@@ -178,6 +243,7 @@ class DocumentList(BaseModel):
     original_url: str | None
     segment_count: int
 
+
 class SourceList(BaseModel):
     id: str
     name: str | None
@@ -187,8 +253,7 @@ class SourceList(BaseModel):
     created_at: datetime
 
 
-# --- Ingestion & Transcription Workflow (Existing Code) ---
-
+# --- Ingestion & Transcription Workflow ---
 
 class IngestRequest(BaseModel):
     source_ids: list[str] = Field(..., min_length=1)
@@ -217,7 +282,6 @@ async def queue_ingestion(req: IngestRequest) -> IngestResponse:
 
 
 # --- Transcription Workflow ---
-
 
 class TranscriptionRequest(BaseModel):
     document_id: str
@@ -261,7 +325,6 @@ async def queue_transcription(req: TranscriptionRequest) -> TranscriptionRespons
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @app.delete("/segments/{segment_id}", status_code=200)
 async def delete_segment(segment_id: str):
     """Delete a segment."""
@@ -277,14 +340,17 @@ async def delete_segment(segment_id: str):
                 raise HTTPException(status_code=404, detail="Segment not found")
     return {"status": "deleted", "segment_id": segment_id}
 
+
 # --- Manual Segmentation Workflow ---
 
 class IngestUrlRequest(BaseModel):
     url: str
 
+
 class IngestUrlResponse(BaseModel):
     document_id: str
     status: str
+
 
 @app.post("/documents/ingest-url", response_model=IngestUrlResponse)
 async def ingest_document_from_url(req: IngestUrlRequest):
@@ -427,8 +493,6 @@ async def ingest_document_from_url(req: IngestUrlRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 class Segment(BaseModel):
     id: str
     document_id: str
@@ -437,7 +501,7 @@ class Segment(BaseModel):
     text: str
     created_at: datetime
     published_at: datetime | None = None
-    topic_count: int = 0
+    hypothesis_count: int = 0
 
 
 class DocumentContent(BaseModel):
@@ -500,7 +564,7 @@ async def get_segment_for_workbench(segment_id: str) -> SegmentWorkbenchContent:
 
 @app.get("/segments")
 async def list_segments() -> list[Segment]:
-    """List all segments, joining with documents to get metadata and topic counts."""
+    """List all segments, joining with documents to get metadata and hypothesis counts."""
     pool = _require_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -514,16 +578,16 @@ async def list_segments() -> list[Segment]:
                     s.text,
                     s.created_at,
                     d.published_at,
-                    COALESCE(topic_counts.topic_count, 0) as topic_count
+                    COALESCE(hyp_counts.hypothesis_count, 0) as hypothesis_count
                 FROM segments s
                 JOIN documents d ON s.document_id = d.id
                 LEFT JOIN (
                     SELECT 
                         segment_id,
-                        COUNT(DISTINCT topic_id) as topic_count
-                    FROM topics_history
+                        COUNT(DISTINCT hypothesis_id) as hypothesis_count
+                    FROM hypothesis_evidence
                     GROUP BY segment_id
-                ) topic_counts ON s.id = topic_counts.segment_id
+                ) hyp_counts ON s.id = hyp_counts.segment_id
                 ORDER BY s.created_at DESC
                 """
             )
@@ -703,139 +767,150 @@ async def create_manual_segment(req: SegmentCreate) -> SegmentResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- Topic & Analysis Workflow (New Architecture) ---
+# --- Hypothesis & Evidence Workflow (New Architecture) ---
 
-@app.get("/segments/{segment_id}/topics", response_model=List[SegmentTopic])
-async def get_segment_topics(segment_id: str):
+@app.get("/segments/{segment_id}/hypotheses", response_model=List[SegmentHypothesis])
+async def get_segment_hypotheses(segment_id: str):
     """
-    Get the latest topics from topics_history that are linked to a specific segment.
-    Returns only the most recent entry per topic_id for this segment.
+    Get all hypotheses linked to a specific segment via hypothesis_evidence.
+    Returns the hypothesis details along with the evidence verdict/analysis for this segment.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                WITH 
-                -- 1. Identify topics linked to this segment
-                my_topics AS (
-                    SELECT DISTINCT topic_id
-                    FROM topics_history
-                    WHERE segment_id = %s
-                ),
-                -- 2. Get the latest LOCAL data (analysis result) for this segment
-                local_latest AS (
-                    SELECT DISTINCT ON (topic_id) 
-                        topic_id, 
-                        summary_text,
-                        created_at
-                    FROM topics_history
-                    WHERE segment_id = %s
-                    ORDER BY topic_id, created_at DESC
-                ),
-                -- 3. Get the latest GLOBAL definition (Name, Desc, Hypothesis) for these topics
-                global_latest AS (
-                    SELECT DISTINCT ON (topic_id)
-                        topic_id,
-                        name,
-                        description,
-                        user_hypothesis
-                    FROM topics_history
-                    WHERE topic_id IN (SELECT topic_id FROM my_topics)
-                    ORDER BY topic_id, created_at DESC
-                )
-                -- 4. Combine: Global Definition + Local Analysis
                 SELECT
-                    gl.topic_id,
-                    gl.name,
-                    gl.description,
-                    gl.user_hypothesis,
-                    ll.summary_text,
-                    ll.created_at
-                FROM global_latest gl
-                JOIN local_latest ll ON gl.topic_id = ll.topic_id
+                    h.id as hypothesis_id,
+                    h.hypothesis_text,
+                    h.description,
+                    h.reference_url,
+                    h.reference_type,
+                    he.verdict,
+                    he.analysis_text,
+                    he.created_at
+                FROM hypothesis_evidence he
+                JOIN hypotheses h ON he.hypothesis_id = h.id
+                WHERE he.segment_id = %s
+                ORDER BY he.created_at DESC
                 """,
-                (segment_id, segment_id)
+                (segment_id,)
             )
             rows = await cur.fetchall()
     results = []
     for r in rows:
         d = dict(r)
-        d['topic_id'] = str(d['topic_id'])  # Convert UUID to string
-        results.append(SegmentTopic(**d))
+        d['hypothesis_id'] = str(d['hypothesis_id'])
+        results.append(SegmentHypothesis(**d))
     return results
 
-@app.get("/topics", response_model=List[TopicHomeView])
-async def list_topics_home_view():
+
+@app.get("/hypotheses", response_model=List[HypothesisView])
+async def list_hypotheses():
     """
-    Lists the latest version of each topic for the main "Home POV".
-    Queries only from topics_history - all topic metadata comes from the most recent history entry.
+    Lists all hypotheses with their latest evidence summary.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                WITH latest_history AS (
+                WITH evidence_stats AS (
                     SELECT
-                        DISTINCT ON (topic_id) *
-                    FROM topics_history
-                    ORDER BY topic_id, created_at DESC
+                        hypothesis_id,
+                        COUNT(*) as evidence_count,
+                        MAX(created_at) as latest_evidence_at
+                    FROM hypothesis_evidence
+                    GROUP BY hypothesis_id
+                ),
+                latest_evidence AS (
+                    SELECT DISTINCT ON (hypothesis_id)
+                        hypothesis_id,
+                        segment_id,
+                        created_at
+                    FROM hypothesis_evidence
+                    ORDER BY hypothesis_id, created_at DESC
                 )
                 SELECT
-                    lh.topic_id,
-                    lh.name as latest_name,
-                    lh.description as latest_description,
-                    lh.user_hypothesis as latest_user_hypothesis,
-                    lh.created_at as last_updated_at,
-                    lh.segment_id,
-                    LEFT(s.text, 200) as segment_text_preview,
-                    d.id as document_id,
-                    d.title as document_title
-                FROM latest_history lh
-                LEFT JOIN segments s ON lh.segment_id = s.id
+                    h.id as hypothesis_id,
+                    h.hypothesis_text,
+                    h.description,
+                    h.reference_url,
+                    h.reference_type,
+                    COALESCE(es.latest_evidence_at, h.updated_at) as last_updated_at,
+                    COALESCE(es.evidence_count, 0) as evidence_count,
+                    le.segment_id as latest_segment_id,
+                    LEFT(s.text, 200) as latest_segment_text_preview,
+                    d.id as latest_document_id,
+                    d.title as latest_document_title
+                FROM hypotheses h
+                LEFT JOIN evidence_stats es ON h.id = es.hypothesis_id
+                LEFT JOIN latest_evidence le ON h.id = le.hypothesis_id
+                LEFT JOIN segments s ON le.segment_id = s.id
                 LEFT JOIN documents d ON s.document_id = d.id
-                ORDER BY lh.created_at DESC;
+                ORDER BY last_updated_at DESC
                 """
             )
             rows = await cur.fetchall()
     results = []
     for r in rows:
         d = dict(r)
-        d['topic_id'] = str(d['topic_id'])  # Convert UUID to string
-        if d.get('segment_id'):
-            d['segment_id'] = str(d['segment_id'])
-        if d.get('document_id'):
-            d['document_id'] = str(d['document_id'])
-        results.append(TopicHomeView(**d))
+        d['hypothesis_id'] = str(d['hypothesis_id'])
+        if d.get('latest_segment_id'):
+            d['latest_segment_id'] = str(d['latest_segment_id'])
+        if d.get('latest_document_id'):
+            d['latest_document_id'] = str(d['latest_document_id'])
+        results.append(HypothesisView(**d))
     return results
 
-@app.post("/topics", status_code=201)
-async def create_topic(req: TopicCreate) -> TopicResponse:
+
+@app.post("/hypotheses", status_code=201)
+async def create_hypothesis(req: HypothesisCreate) -> HypothesisResponse:
     """
-    Creates a new topic manually.
-    Creates a topic_id without requiring a name - the name will be set when
-    the topic is first saved to topics_history with a segment.
+    Creates a new hypothesis manually.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            # Create the evergreen topic ID (no name column anymore)
             await cur.execute(
-                "INSERT INTO topic_ids DEFAULT VALUES RETURNING id"
+                """
+                INSERT INTO hypotheses (hypothesis_text, description, reference_url, reference_type)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (req.hypothesis_text, req.description, req.reference_url, req.reference_type)
             )
             row = await cur.fetchone()
             if not row:
-                raise HTTPException(status_code=500, detail="Failed to create topic ID")
-            topic_id = str(row["id"])
+                raise HTTPException(status_code=500, detail="Failed to create hypothesis")
+            hypothesis_id = str(row["id"])
                 
-    return TopicResponse(topic_id=topic_id)
+    return HypothesisResponse(hypothesis_id=hypothesis_id)
 
-@app.get("/topics/{topic_id}/history", response_model=List[TopicHistoryEntry])
-async def get_topic_history(topic_id: str):
+
+@app.delete("/hypotheses/{hypothesis_id}", status_code=200)
+async def delete_hypothesis(hypothesis_id: str):
     """
-    Returns all topics_history entries for a given topic_id, sorted by created_at DESC.
-    Each entry represents one segment analysis for this topic.
+    Delete a hypothesis and all related evidence (CASCADE).
+    """
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM hypotheses WHERE id = %s RETURNING id",
+                (hypothesis_id,)
+            )
+            result = await cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Hypothesis not found")
+    return {"status": "deleted", "hypothesis_id": hypothesis_id}
+
+
+@app.get("/hypotheses/{hypothesis_id}/evidence", response_model=List[HypothesisEvidenceEntry])
+async def get_hypothesis_evidence(hypothesis_id: str):
+    """
+    Returns all evidence entries for a given hypothesis, sorted by created_at DESC.
+    Each entry represents one segment linked to this hypothesis with a verdict.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
@@ -843,41 +918,98 @@ async def get_topic_history(topic_id: str):
             await cur.execute(
                 """
                 SELECT
-                    th.topic_id,
-                    th.segment_id,
-                    th.name,
-                    th.description,
-                    th.user_hypothesis,
-                    th.summary_text,
-                    th.created_at,
+                    he.id as evidence_id,
+                    he.hypothesis_id,
+                    he.segment_id,
+                    he.verdict,
+                    he.analysis_text,
+                    he.authored_by,
+                    he.created_at,
                     LEFT(s.text, 200) as segment_text_preview,
                     d.id as document_id,
                     d.title as document_title
-                FROM topics_history th
-                LEFT JOIN segments s ON th.segment_id = s.id
+                FROM hypothesis_evidence he
+                LEFT JOIN segments s ON he.segment_id = s.id
                 LEFT JOIN documents d ON s.document_id = d.id
-                WHERE th.topic_id = %s
-                ORDER BY th.created_at DESC
+                WHERE he.hypothesis_id = %s
+                ORDER BY he.created_at DESC
                 """,
-                (topic_id,)
+                (hypothesis_id,)
             )
             rows = await cur.fetchall()
     results = []
     for r in rows:
         d = dict(r)
-        d['topic_id'] = str(d['topic_id'])  # Convert UUID to string
-        d['segment_id'] = str(d['segment_id'])  # Convert UUID to string
+        d['evidence_id'] = str(d['evidence_id'])
+        d['hypothesis_id'] = str(d['hypothesis_id'])
+        d['segment_id'] = str(d['segment_id'])
         if d.get('document_id'):
             d['document_id'] = str(d['document_id'])
-        results.append(TopicHistoryEntry(**d))
+        results.append(HypothesisEvidenceEntry(**d))
     return results
 
-# --- Analysis Endpoints (Real Implementation) ---
 
-@app.post("/segments/{segment_id}/topics:suggest", response_model=SuggestTopicsResponse)
-async def suggest_topics(segment_id: str):
+@app.get("/hypotheses/{hypothesis_id}/reference", response_model=HypothesisReferenceResponse)
+async def get_hypothesis_reference(hypothesis_id: str):
     """
-    Analyzes the segment and suggests relevant topics (both existing and new).
+    Fetches the full reference document for a hypothesis.
+    Returns cached content if available, otherwise fetches from URL.
+    """
+    pool = _require_pool()
+    
+    # 1. Get hypothesis with reference URL
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT reference_url, reference_type FROM hypotheses WHERE id = %s",
+                (hypothesis_id,)
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Hypothesis not found")
+            
+            reference_url = row.get('reference_url')
+            reference_type = row.get('reference_type')
+            
+            if not reference_url:
+                return HypothesisReferenceResponse(
+                    hypothesis_id=hypothesis_id,
+                    reference_url=None,
+                    reference_type=None,
+                    full_text=None,
+                    character_count=None,
+                    cached=False
+                )
+    
+    # 2. Check cache first
+    full_text = await get_cached_reference(hypothesis_id, pool)
+    cached = full_text is not None
+    
+    # 3. Fetch if not cached
+    if not full_text:
+        full_text = await fetch_reference_content(reference_url)
+        
+        # Cache the fetched content
+        if full_text:
+            async with pool.connection() as conn:
+                await cache_reference_content(hypothesis_id, full_text, conn)
+    
+    return HypothesisReferenceResponse(
+        hypothesis_id=hypothesis_id,
+        reference_url=reference_url,
+        reference_type=reference_type,
+        full_text=full_text,
+        character_count=len(full_text) if full_text else None,
+        cached=cached
+    )
+
+
+# --- Analysis Endpoints ---
+
+@app.post("/segments/{segment_id}/hypotheses:suggest", response_model=SuggestHypothesesResponse)
+async def suggest_hypotheses(segment_id: str):
+    """
+    Analyzes the segment and suggests relevant hypotheses (both existing and new).
     """
     pool = _require_pool()
     
@@ -887,38 +1019,43 @@ async def suggest_topics(segment_id: str):
     
     # 2. Run suggestion pipeline
     try:
-        suggestions = await run_suggest_topics(pool, segment_text)
+        suggestions = await run_suggest_hypotheses(pool, segment_text)
         
         # Map domain model to API model
         api_suggestions = [
-            TopicSuggestion(
-                topic_id=s.topic_id,
-                name=s.name,
+            HypothesisSuggestion(
+                hypothesis_id=s.hypothesis_id,
+                hypothesis_text=s.hypothesis_text,
                 source=s.source,
                 description=s.description,
-                user_hypothesis=s.user_hypothesis,
-                summary_text=s.summary_text
+                analysis_text=s.analysis_text
             )
             for s in suggestions
         ]
         
-        return SuggestTopicsResponse(suggestions=api_suggestions)
+        return SuggestHypothesesResponse(suggestions=api_suggestions)
         
     except Exception as e:
         logger.error(f"Failed to generate suggestions: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate topic suggestions.")
+        raise HTTPException(status_code=500, detail="Failed to generate hypothesis suggestions.")
 
 
 @app.post("/analysis:check_hypothesis", response_model=CheckHypothesisResponse)
 async def check_hypothesis(req: CheckHypothesisRequest):
     """
-    Runs a focused analysis to check if the segment confirms or refutes the user hypothesis.
+    Runs a focused analysis to check if the segment confirms or refutes the hypothesis.
+    Optionally includes full reference document context if requested.
     """
+    pool = _require_pool()
     try:
         analysis_text = await run_check_hypothesis(
             segment_text=req.segment_text,
-            topic_name=req.topic_name,
-            user_hypothesis=req.user_hypothesis
+            hypothesis_text=req.hypothesis_text,
+            hypothesis_description=req.hypothesis_description,
+            reference_url=req.reference_url,
+            include_full_reference=req.include_full_reference,
+            hypothesis_id=req.hypothesis_id,
+            db_connection=pool
         )
         return CheckHypothesisResponse(analysis_text=analysis_text)
     except Exception as e:
@@ -929,13 +1066,13 @@ async def check_hypothesis(req: CheckHypothesisRequest):
 @app.post("/analysis:generate_pov", response_model=GeneratePovResponse)
 async def generate_analyst_pov(req: GeneratePovRequest):
     """
-    Generates an analyst POV for a given segment and unsaved topic text.
+    Generates an analyst POV for a given segment and hypothesis.
     Saves a 'draft' record of the run and returns the summary.
     """
     # Placeholder for actual analysis pipeline
-    print(f"Generating POV for segment {req.segment_id} on topic '{req.topic_name}'")
+    print(f"Generating POV for segment {req.segment_id} on hypothesis '{req.hypothesis_text}'")
     
-    pov_summary = f"This is the analyst's take on '{req.topic_name}'. Based on the segment, the hypothesis '{req.user_hypothesis}' seems plausible because..."
+    pov_summary = f"This is the analyst's take on '{req.hypothesis_text}'. Based on the segment, this hypothesis seems plausible because..."
     trace_data = {"steps": ["step1_result", "step2_result"], "confidence": 0.9}
     
     pool = _require_pool()
@@ -956,63 +1093,195 @@ async def generate_analyst_pov(req: GeneratePovRequest):
             return GeneratePovResponse(pov_summary=pov_summary, pov_id=str(row["id"]))
 
 
-@app.post("/segments/{segment_id}/topics", status_code=204)
-async def save_segment_topics_history(segment_id: str, req: SaveTopicsHistoryRequest):
+@app.post("/segments/{segment_id}/evidence", status_code=204)
+async def save_segment_evidence(segment_id: str, req: SaveEvidenceRequest):
     """
-    Saves the final, edited topic analysis for a segment.
-    Creates new records in topics_history and links any generated POVs.
+    Saves evidence linking a segment to hypotheses.
+    Creates new hypothesis_evidence records.
+    For new hypotheses (hypothesis_id is null), creates the hypothesis first.
     """
     pool = _require_pool()
     try:
         async with pool.connection() as conn:
             async with conn.transaction():
-                for topic_payload in req.topics:
-                    # Normalize topic_id: treat empty string as None for new topics
-                    topic_id = topic_payload.topic_id if topic_payload.topic_id else None
+                for evidence_payload in req.evidence:
+                    # Normalize hypothesis_id: treat empty string as None for new hypotheses
+                    hypothesis_id = evidence_payload.hypothesis_id if evidence_payload.hypothesis_id else None
                     
-                    # If topic_id is null or empty, it's a new topic. Create a new topic_id (no name-based lookup).
-                    if not topic_id:
+                    # If hypothesis_id is null or empty, it's a new hypothesis. Create it first.
+                    if not hypothesis_id:
                         async with conn.cursor(row_factory=dict_row) as cur:
                             await cur.execute(
-                                "INSERT INTO topic_ids DEFAULT VALUES RETURNING id"
+                                """
+                                INSERT INTO hypotheses (hypothesis_text, description)
+                                VALUES (%s, %s)
+                                RETURNING id
+                                """,
+                                (evidence_payload.hypothesis_text, evidence_payload.description)
                             )
                             row = await cur.fetchone()
                             if not row:
-                                raise HTTPException(status_code=500, detail="Failed to create topic ID.")
-                            topic_id = str(row["id"])
+                                raise HTTPException(status_code=500, detail="Failed to create hypothesis.")
+                            hypothesis_id = str(row["id"])
 
-                    # Now, insert the new entry into the history log.
+                    # Now, insert the evidence record.
                     async with conn.cursor(row_factory=dict_row) as cur:
                         await cur.execute(
                             """
-                            INSERT INTO topics_history (topic_id, segment_id, name, description, user_hypothesis, summary_text)
-                            VALUES (%s, %s, %s, %s, %s, %s)
+                            INSERT INTO hypothesis_evidence (hypothesis_id, segment_id, verdict, analysis_text)
+                            VALUES (%s, %s, %s, %s)
                             RETURNING id;
                             """,
-                            (topic_id, segment_id, topic_payload.name, topic_payload.description, topic_payload.user_hypothesis, topic_payload.summary_text)
+                            (hypothesis_id, segment_id, evidence_payload.verdict, evidence_payload.analysis_text)
                         )
-                        history_row = await cur.fetchone()
-                        if not history_row:
-                            raise HTTPException(status_code=500, detail="Failed to create topics history record.")
-                        history_id = str(history_row["id"])
+                        evidence_row = await cur.fetchone()
+                        if not evidence_row:
+                            raise HTTPException(status_code=500, detail="Failed to create evidence record.")
+                        evidence_id = str(evidence_row["id"])
 
-                    # If a POV was generated, link it to the new history record and finalize it.
-                    if topic_payload.pov_id:
+                    # If a POV was generated, link it to the evidence record and finalize it.
+                    if evidence_payload.pov_id:
                         async with conn.cursor() as cur:
                             await cur.execute(
                                 """
                                 UPDATE persona_topic_povs
-                                SET topics_history_id = %s, run_status = 'final', updated_at = now()
+                                SET hypothesis_evidence_id = %s, run_status = 'final', updated_at = now()
                                 WHERE id = %s;
                                 """,
-                                (history_id, topic_payload.pov_id)
+                                (evidence_id, evidence_payload.pov_id)
                             )
         return
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to save segment topics history: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to save topics: {str(e)}")
+        logger.error(f"Failed to save segment evidence: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save evidence: {str(e)}")
+
+
+# --- Questions Endpoints (P2 Feature) ---
+
+@app.get("/questions", response_model=List[Question])
+async def list_questions():
+    """List all questions with hypothesis counts."""
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    q.id as question_id,
+                    q.question_text,
+                    q.created_at,
+                    COALESCE(COUNT(qh.hypothesis_id), 0) as hypothesis_count
+                FROM questions q
+                LEFT JOIN question_hypotheses qh ON q.id = qh.question_id
+                GROUP BY q.id, q.question_text, q.created_at
+                ORDER BY q.created_at DESC
+                """
+            )
+            rows = await cur.fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d['question_id'] = str(d['question_id'])
+        results.append(Question(**d))
+    return results
+
+
+@app.post("/questions", status_code=201)
+async def create_question(req: QuestionCreate) -> QuestionResponse:
+    """Create a new question."""
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "INSERT INTO questions (question_text) VALUES (%s) RETURNING id",
+                (req.question_text,)
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=500, detail="Failed to create question")
+            question_id = str(row["id"])
+    return QuestionResponse(question_id=question_id)
+
+
+@app.delete("/questions/{question_id}", status_code=200)
+async def delete_question(question_id: str):
+    """
+    Delete a question and all its links to hypotheses (CASCADE).
+    Hypotheses themselves are not affected.
+    """
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM questions WHERE id = %s RETURNING id",
+                (question_id,)
+            )
+            result = await cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Question not found")
+    return {"status": "deleted", "question_id": question_id}
+
+
+@app.post("/questions/{question_id}/hypotheses", status_code=201)
+async def link_hypothesis_to_question(question_id: str, req: QuestionHypothesisLink):
+    """Link a hypothesis to a question."""
+    pool = _require_pool()
+    try:
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO question_hypotheses (question_id, hypothesis_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (question_id, hypothesis_id) DO NOTHING
+                    RETURNING id
+                    """,
+                    (question_id, req.hypothesis_id)
+                )
+                row = await cur.fetchone()
+                # If row is None, it means the link already existed (conflict)
+        return {"status": "linked", "question_id": question_id, "hypothesis_id": req.hypothesis_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/questions/{question_id}/hypotheses", response_model=List[QuestionHypothesis])
+async def get_question_hypotheses(question_id: str):
+    """Get all hypotheses linked to a specific question."""
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    h.id as hypothesis_id,
+                    h.hypothesis_text,
+                    h.description,
+                    h.reference_url,
+                    h.reference_type,
+                    h.created_at,
+                    COALESCE(ev_counts.evidence_count, 0) as evidence_count
+                FROM question_hypotheses qh
+                JOIN hypotheses h ON qh.hypothesis_id = h.id
+                LEFT JOIN (
+                    SELECT hypothesis_id, COUNT(*) as evidence_count
+                    FROM hypothesis_evidence
+                    GROUP BY hypothesis_id
+                ) ev_counts ON h.id = ev_counts.hypothesis_id
+                WHERE qh.question_id = %s
+                ORDER BY qh.created_at DESC
+                """,
+                (question_id,)
+            )
+            rows = await cur.fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d['hypothesis_id'] = str(d['hypothesis_id'])
+        results.append(QuestionHypothesis(**d))
+    return results
 
 
 # --- Documents & Sources Endpoints ---
@@ -1071,11 +1340,13 @@ async def archive_document(document_id: str):
                 raise HTTPException(status_code=404, detail="Document not found")
     return {"status": "archived", "document_id": document_id}
 
+
 class DocumentUpdate(BaseModel):
     title: str | None = None
     author: str | None = None
     published_at: datetime | None = None
     source_id: str | None = None
+
 
 @app.patch("/documents/{document_id}", response_model=DocumentList)
 async def update_document_metadata(document_id: str, update: DocumentUpdate):
@@ -1095,20 +1366,13 @@ async def update_document_metadata(document_id: str, update: DocumentUpdate):
         fields.append("published_at = %s")
         values.append(update.published_at)
     if update.source_id is not None:
-        # Allow setting source_id to a valid UUID or NULL (if empty string passed, maybe handle as None?)
-        # For now assume the frontend sends a UUID or we skip.
-        # Logic: If client sends "null" (None in pydantic), we skip. 
-        # But we might want to *unset* it?
-        # Pydantic defaults to None if missing. 
-        # If user wants to clear it, they need to send explicit null? Pydantic distinction is hard.
-        # Let's assume we only *set* it to a value for now. Unsetting source seems rare.
         fields.append("source_id = %s")
         values.append(update.source_id if update.source_id else None)
         
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
         
-    values.append(document_id) # For WHERE clause
+    values.append(document_id)  # For WHERE clause
     
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -1154,6 +1418,7 @@ async def update_document_metadata(document_id: str, update: DocumentUpdate):
             d['id'] = str(d['id'])
             return DocumentList(**d)
 
+
 @app.get("/sources", response_model=List[SourceList])
 async def list_sources():
     """List all sources."""
@@ -1182,6 +1447,7 @@ async def list_sources():
         results.append(SourceList(**d))
         
     return results
+
 
 if __name__ == "__main__":
     import uvicorn
