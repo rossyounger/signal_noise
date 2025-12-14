@@ -261,7 +261,172 @@ async def queue_transcription(req: TranscriptionRequest) -> TranscriptionRespons
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.delete("/segments/{segment_id}", status_code=200)
+async def delete_segment(segment_id: str):
+    """Delete a segment."""
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM segments WHERE id = %s RETURNING id",
+                (segment_id,)
+            )
+            result = await cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Segment not found")
+    return {"status": "deleted", "segment_id": segment_id}
+
 # --- Manual Segmentation Workflow ---
+
+class IngestUrlRequest(BaseModel):
+    url: str
+
+class IngestUrlResponse(BaseModel):
+    document_id: str
+    status: str
+
+@app.post("/documents/ingest-url", response_model=IngestUrlResponse)
+async def ingest_document_from_url(req: IngestUrlRequest):
+    """
+    Manually ingest a document from a URL.
+    Fetches the page, extracts content/metadata, and saves to DB.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+    import email.utils
+
+    logger.info(f"Ingesting URL: {req.url}")
+
+    try:
+        # 1. Fetch the page
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; SignalNoiseIngest/1.0; +https://signal-noise)"
+        }
+        response = requests.get(req.url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        # 2. Extract Metadata
+        # -- Title --
+        title = None
+        if soup.find("meta", property="og:title"):
+            title = soup.find("meta", property="og:title")["content"]
+        elif soup.title:
+            title = soup.title.string
+        elif soup.find("h1"):
+            title = soup.find("h1").get_text(strip=True)
+        
+        # -- Author --
+        author = None
+        if soup.find("meta", attrs={"name": "author"}):
+            author = soup.find("meta", attrs={"name": "author"})["content"]
+        elif soup.find("meta", property="article:author"):
+            author = soup.find("meta", property="article:author")["content"]
+        elif soup.find("a", attrs={"rel": "author"}):
+            author = soup.find("a", attrs={"rel": "author"}).get_text(strip=True)
+
+        # -- Date --
+        published_at = None
+        date_str = None
+        if soup.find("meta", property="article:published_time"):
+            date_str = soup.find("meta", property="article:published_time")["content"]
+        elif soup.find("meta", attrs={"name": "date"}):
+            date_str = soup.find("meta", attrs={"name": "date"})["content"]
+        elif soup.find("time", attrs={"datetime": True}):
+            date_str = soup.find("time", attrs={"datetime": True})["datetime"]
+
+        if date_str:
+            try:
+                # Try ISO format first (common in meta tags)
+                published_at = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    # Try RFC 2822 (common in headers/older meta)
+                    parsed = email.utils.parsedate_to_datetime(date_str)
+                    if parsed:
+                        published_at = parsed
+                except Exception as e:
+                    logger.warning(f"Failed to parse date '{date_str}': {e}")
+
+
+        # 3. Extract Content (Basic Strategy)
+        # Try to find the semantic 'main' content to avoid nav/footer garbage
+        content_elem = soup.find("article") or soup.find("main") or soup.body
+
+        # Remove script/style tags
+        if content_elem:
+            for script in content_elem(["script", "style", "nav", "footer"]):
+                script.decompose()
+            
+            content_html = str(content_elem)
+            content_text = content_elem.get_text("\n", strip=True)
+        else:
+            # Fallback to raw text if no body (unlikely for HTML)
+            content_html = response.text
+            content_text = soup.get_text("\n", strip=True)
+
+        # 4. Save to DB
+        pool = _require_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO documents (
+                        source_id,
+                        external_id,
+                        ingest_method,
+                        original_media_type,
+                        original_url,
+                        title,
+                        author,
+                        published_at,
+                        ingested_at,
+                        content_html,
+                        content_text,
+                        ingest_status
+                    )
+                    VALUES (
+                        NULL, -- No source_id for direct URL
+                        %s, -- Use URL as external_id
+                        'direct_url',
+                        'article',
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        now(),
+                        %s,
+                        %s,
+                        'ok'
+                    )
+                    RETURNING id
+                    """,
+                    (
+                        req.url,
+                        req.url,
+                        title or "Untitled Document",
+                        author,
+                        published_at,
+                        content_html,
+                        content_text
+                    )
+                )
+                row = await cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=500, detail="Failed to insert document.")
+                
+                doc_id = str(row[0])
+                logger.info(f"Successfully ingested document {doc_id}")
+                return IngestUrlResponse(document_id=doc_id, status="ok")
+
+    except Exception as e:
+        logger.error(f"Failed to ingest URL {req.url}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 class Segment(BaseModel):
@@ -452,8 +617,8 @@ async def create_manual_segment(req: SegmentCreate) -> SegmentResponse:
                     (req.document_id,),
                 )
                 document_row = await cur.fetchone()
-            if not document_row:
-                raise HTTPException(status_code=404, detail="Document not found")
+                if not document_row:
+                    raise HTTPException(status_code=404, detail="Document not found")
 
             content_html = document_row.get("content_html")
             html_source = req.html if req.html and req.html.strip() else None
@@ -481,8 +646,8 @@ async def create_manual_segment(req: SegmentCreate) -> SegmentResponse:
                         segment_html = content_html[start_offset:end_offset]
                         offset_kind = "html"
                         cleaned_text = BeautifulSoup(segment_html, "html.parser").get_text().strip()
-                    if cleaned_text:
-                        segment_text = cleaned_text
+                        if cleaned_text:
+                            segment_text = cleaned_text
                 except ValueError:
                     # Could not map, fall back to text offsets
                     pass
@@ -551,18 +716,46 @@ async def get_segment_topics(segment_id: str):
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT DISTINCT ON (topic_id)
-                    topic_id,
-                    name,
-                    description,
-                    user_hypothesis,
-                    summary_text,
-                    created_at
-                FROM topics_history
-                WHERE segment_id = %s
-                ORDER BY topic_id, created_at DESC
+                WITH 
+                -- 1. Identify topics linked to this segment
+                my_topics AS (
+                    SELECT DISTINCT topic_id
+                    FROM topics_history
+                    WHERE segment_id = %s
+                ),
+                -- 2. Get the latest LOCAL data (analysis result) for this segment
+                local_latest AS (
+                    SELECT DISTINCT ON (topic_id) 
+                        topic_id, 
+                        summary_text,
+                        created_at
+                    FROM topics_history
+                    WHERE segment_id = %s
+                    ORDER BY topic_id, created_at DESC
+                ),
+                -- 3. Get the latest GLOBAL definition (Name, Desc, Hypothesis) for these topics
+                global_latest AS (
+                    SELECT DISTINCT ON (topic_id)
+                        topic_id,
+                        name,
+                        description,
+                        user_hypothesis
+                    FROM topics_history
+                    WHERE topic_id IN (SELECT topic_id FROM my_topics)
+                    ORDER BY topic_id, created_at DESC
+                )
+                -- 4. Combine: Global Definition + Local Analysis
+                SELECT
+                    gl.topic_id,
+                    gl.name,
+                    gl.description,
+                    gl.user_hypothesis,
+                    ll.summary_text,
+                    ll.created_at
+                FROM global_latest gl
+                JOIN local_latest ll ON gl.topic_id = ll.topic_id
                 """,
-                (segment_id,)
+                (segment_id, segment_id)
             )
             rows = await cur.fetchall()
     results = []
@@ -850,7 +1043,7 @@ async def list_documents():
                     GROUP BY document_id
                 ) seg_counts ON d.id = seg_counts.document_id
                 WHERE d.is_archived = FALSE
-                ORDER BY d.created_at DESC
+                ORDER BY d.published_at DESC NULLS LAST, d.created_at DESC
                 """
             )
             rows = await cur.fetchall()
@@ -877,6 +1070,89 @@ async def archive_document(document_id: str):
             if not result:
                 raise HTTPException(status_code=404, detail="Document not found")
     return {"status": "archived", "document_id": document_id}
+
+class DocumentUpdate(BaseModel):
+    title: str | None = None
+    author: str | None = None
+    published_at: datetime | None = None
+    source_id: str | None = None
+
+@app.patch("/documents/{document_id}", response_model=DocumentList)
+async def update_document_metadata(document_id: str, update: DocumentUpdate):
+    """Update document metadata (Title, Author, Published Date, Source)."""
+    pool = _require_pool()
+    
+    # Build dynamic update query
+    fields = []
+    values = []
+    if update.title is not None:
+        fields.append("title = %s")
+        values.append(update.title)
+    if update.author is not None:
+        fields.append("author = %s")
+        values.append(update.author)
+    if update.published_at is not None:
+        fields.append("published_at = %s")
+        values.append(update.published_at)
+    if update.source_id is not None:
+        # Allow setting source_id to a valid UUID or NULL (if empty string passed, maybe handle as None?)
+        # For now assume the frontend sends a UUID or we skip.
+        # Logic: If client sends "null" (None in pydantic), we skip. 
+        # But we might want to *unset* it?
+        # Pydantic defaults to None if missing. 
+        # If user wants to clear it, they need to send explicit null? Pydantic distinction is hard.
+        # Let's assume we only *set* it to a value for now. Unsetting source seems rare.
+        fields.append("source_id = %s")
+        values.append(update.source_id if update.source_id else None)
+        
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+        
+    values.append(document_id) # For WHERE clause
+    
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                UPDATE documents 
+                SET {", ".join(fields)}, updated_at = now()
+                WHERE id = %s
+                RETURNING id
+                """,
+                values
+            )
+            req_result = await cur.fetchone()
+            if not req_result:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Return full document object similar to list_documents
+            await cur.execute(
+                """
+                SELECT
+                    d.id,
+                    s.name as source_title,
+                    d.title,
+                    d.author,
+                    d.published_at,
+                    d.created_at,
+                    LEFT(d.content_text, 200) as content_text_preview,
+                    d.original_url,
+                    COALESCE(seg_counts.segment_count, 0) as segment_count
+                FROM documents d
+                LEFT JOIN sources s ON d.source_id = s.id
+                LEFT JOIN (
+                    SELECT document_id, COUNT(*) as segment_count
+                    FROM segments
+                    GROUP BY document_id
+                ) seg_counts ON d.id = seg_counts.document_id
+                WHERE d.id = %s
+                """,
+                (document_id,)
+            )
+            row = await cur.fetchone()
+            d = dict(row)
+            d['id'] = str(d['id'])
+            return DocumentList(**d)
 
 @app.get("/sources", response_model=List[SourceList])
 async def list_sources():

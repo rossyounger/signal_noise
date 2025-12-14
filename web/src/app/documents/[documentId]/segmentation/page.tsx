@@ -26,7 +26,7 @@ interface SelectionData {
 
 export default function SegmentationWorkbenchPage() {
   const params = useParams();
-  const documentId = params.documentId as string;
+  const documentId = decodeURIComponent(params.documentId as string);
 
   const [document, setDocument] = useState<DocumentContent | null>(null);
   const [segments, setSegments] = useState<DocumentSegment[]>([]);
@@ -114,7 +114,7 @@ export default function SegmentationWorkbenchPage() {
       }
 
       const range = sel.getRangeAt(0);
-      
+
       // Check if selection is within our content area
       if (!contentRef.current.contains(range.commonAncestorContainer)) {
         return;
@@ -147,7 +147,7 @@ export default function SegmentationWorkbenchPage() {
         highlightSpan.style.color = '#1e40af';
         highlightSpan.style.padding = '2px 0';
         highlightSpan.style.borderRadius = '2px';
-        
+
         try {
           range.surroundContents(highlightSpan);
         } catch (e) {
@@ -163,29 +163,29 @@ export default function SegmentationWorkbenchPage() {
 
       // Calculate offsets by finding selected text in content_text
       const cleanSelected = selectedText.trim();
-      
+
       // Try to find the text in content_text
       let startOffset = document.content_text.indexOf(cleanSelected);
-      
+
       // If exact match fails, try with first 100 chars as search hint
       if (startOffset === -1 && cleanSelected.length > 100) {
         const searchHint = cleanSelected.substring(0, 100);
         startOffset = document.content_text.indexOf(searchHint);
       }
-      
+
       // If still not found, try normalized whitespace
       if (startOffset === -1) {
         const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
         const normalizedSelected = normalize(cleanSelected);
         const normalizedContent = normalize(document.content_text);
         const normalizedIndex = normalizedContent.indexOf(normalizedSelected);
-        
+
         if (normalizedIndex !== -1) {
           // Approximate: use normalized index (close enough, backend will refine)
           startOffset = normalizedIndex;
         }
       }
-      
+
       // Last resort: send None and let backend figure it out
       const endOffset = startOffset !== -1 ? startOffset + cleanSelected.length : undefined;
 
@@ -286,11 +286,10 @@ export default function SegmentationWorkbenchPage() {
         <button
           onClick={handleCreateSegment}
           disabled={!selection || creating}
-          className={`px-4 py-2 rounded-md text-sm font-semibold shadow-sm transition-all ${
-            selection && !creating
+          className={`px-4 py-2 rounded-md text-sm font-semibold shadow-sm transition-all ${selection && !creating
               ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-800'
               : 'bg-gray-200 text-gray-500 cursor-not-allowed'
-          }`}
+            }`}
         >
           {creating ? (
             'Creating...'

@@ -19,6 +19,10 @@ export default function SourcesPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // URL Ingestion State
+  const [urlInput, setUrlInput] = useState('');
+  const [isIngestingUrl, setIsIngestingUrl] = useState(false);
+
   useEffect(() => {
     fetchSources();
   }, []);
@@ -41,6 +45,32 @@ export default function SourcesPage() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleIngestUrl = async () => {
+    if (!urlInput) return;
+    setIsIngestingUrl(true);
+    setFeedbackMessage(null);
+
+    try {
+      const res = await fetch('http://127.0.0.1:8000/documents/ingest-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: urlInput }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || 'Failed to ingest URL');
+      }
+
+      setFeedbackMessage({ type: 'success', text: 'Successfully ingested document from URL!' });
+      setUrlInput('');
+    } catch (err: any) {
+      setFeedbackMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsIngestingUrl(false);
     }
   };
 
@@ -109,29 +139,16 @@ export default function SourcesPage() {
           <button
             onClick={handleRefreshSelected}
             disabled={selectedIds.size === 0 || refreshing}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              selectedIds.size === 0 || refreshing
-                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                : 'bg-indigo-600 text-white hover:bg-indigo-700'
-            }`}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${selectedIds.size === 0 || refreshing
+              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              : 'bg-indigo-600 text-white hover:bg-indigo-700'
+              }`}
           >
             {refreshing ? (
               <span className="flex items-center gap-2">
                 <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                    fill="none"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  />
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
                 Queueing...
               </span>
@@ -141,13 +158,37 @@ export default function SourcesPage() {
           </button>
         </div>
 
+        {/* --- Import via URL Section --- */}
+        <div className="bg-white p-6 rounded-lg shadow mb-8 border border-gray-200">
+          <h2 className="text-lg font-medium text-gray-900 mb-4">Import via URL</h2>
+          <div className="flex gap-4">
+            <input
+              type="url"
+              placeholder="https://example.com/article"
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              className="flex-1 min-w-0 block w-full px-3 py-2 rounded-md border border-gray-300 text-gray-900 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+              onKeyDown={(e) => e.key === 'Enter' && handleIngestUrl()}
+            />
+            <button
+              onClick={handleIngestUrl}
+              disabled={!urlInput || isIngestingUrl}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+            >
+              {isIngestingUrl ? 'Ingesting...' : 'Ingest URL'}
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            Paste a URL to automatically extract content, author, and date.
+          </p>
+        </div>
+
         {feedbackMessage && (
           <div
-            className={`mb-4 p-4 rounded-md ${
-              feedbackMessage.type === 'success'
-                ? 'bg-green-50 text-green-800 border border-green-200'
-                : 'bg-red-50 text-red-800 border border-red-200'
-            }`}
+            className={`mb-4 p-4 rounded-md ${feedbackMessage.type === 'success'
+              ? 'bg-green-50 text-green-800 border border-green-200'
+              : 'bg-red-50 text-red-800 border border-red-200'
+              }`}
           >
             {feedbackMessage.text}
           </div>
@@ -205,9 +246,8 @@ export default function SourcesPage() {
                 sources.map((source) => (
                   <tr
                     key={source.id}
-                    className={`hover:bg-gray-50 cursor-pointer ${
-                      selectedIds.has(source.id) ? 'bg-indigo-50' : ''
-                    }`}
+                    className={`hover:bg-gray-50 cursor-pointer ${selectedIds.has(source.id) ? 'bg-indigo-50' : ''
+                      }`}
                     onClick={() => toggleSelect(source.id)}
                   >
                     <td className="px-6 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
