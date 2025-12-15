@@ -235,7 +235,7 @@ export default function SegmentAnalyzePage() {
     }
   };
 
-  const handleStagedChange = (field: keyof StagedChange, value: string | null) => {
+  const handleStagedChange = (field: keyof StagedChange, value: string | boolean | null) => {
     if (!activeHypothesisKey) return;
     setStagedChanges(prev => ({
       ...prev,
@@ -243,7 +243,7 @@ export default function SegmentAnalyzePage() {
         ...prev[activeHypothesisKey],
         [field]: value,
         // Mark as dirty when user edits content fields
-        isDirty: ['hypothesis_text', 'description', 'analysis_text'].includes(field)
+        isDirty: ['hypothesis_text', 'description', 'analysis_text', 'includeFullReference'].includes(field)
           ? true
           : prev[activeHypothesisKey]?.isDirty,
       },
