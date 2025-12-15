@@ -21,6 +21,11 @@ export default function HypothesesPage() {
   const [hypotheses, setHypotheses] = useState<HypothesisView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editingHypothesisId, setEditingHypothesisId] = useState<string | null>(null);
+  const [editHypothesisText, setEditHypothesisText] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   
   // New Hypothesis Form State
   const [isCreating, setIsCreating] = useState(false);
@@ -40,8 +45,8 @@ export default function HypothesesPage() {
       if (!res.ok) throw new Error('Failed to fetch hypotheses');
       const data = await res.json();
       setHypotheses(data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -78,8 +83,8 @@ export default function HypothesesPage() {
       setNewReferenceType('');
       setIsCreating(false);
       fetchHypotheses();
-    } catch (err: any) {
-      setCreateError(err.message);
+    } catch (err: unknown) {
+      setCreateError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -110,8 +115,56 @@ export default function HypothesesPage() {
 
       // Success: Refresh list
       fetchHypotheses();
-    } catch (err: any) {
-      alert(`Failed to delete hypothesis: ${err.message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      alert(`Failed to delete hypothesis: ${message}`);
+    }
+  };
+
+  const startEdit = (hyp: HypothesisView) => {
+    setEditError(null);
+    setEditingHypothesisId(hyp.hypothesis_id);
+    setEditHypothesisText(hyp.hypothesis_text || '');
+    setEditDescription(hyp.description || '');
+  };
+
+  const cancelEdit = () => {
+    setEditError(null);
+    setEditingHypothesisId(null);
+    setEditHypothesisText('');
+    setEditDescription('');
+  };
+
+  const handleSaveEdit = async (hypothesisId: string) => {
+    setEditError(null);
+    const trimmed = editHypothesisText.trim();
+    if (!trimmed) {
+      setEditError('Hypothesis text is required');
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/hypotheses/${hypothesisId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hypothesis_text: trimmed,
+          description: editDescription.trim() || null,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to update hypothesis');
+      }
+
+      cancelEdit();
+      fetchHypotheses();
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -248,6 +301,34 @@ export default function HypothesesPage() {
                         >
                           View Evidence
                         </Link>
+                        {editingHypothesisId === hyp.hypothesis_id ? (
+                          <>
+                            <button
+                              onClick={() => handleSaveEdit(hyp.hypothesis_id)}
+                              disabled={isSavingEdit}
+                              className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-green-600 rounded-md shadow-sm hover:bg-green-700 active:bg-green-800 disabled:bg-green-300 disabled:cursor-not-allowed transition-all"
+                              title="Save changes"
+                            >
+                              {isSavingEdit ? 'Saving...' : 'Save'}
+                            </button>
+                            <button
+                              onClick={cancelEdit}
+                              disabled={isSavingEdit}
+                              className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 rounded-md shadow-sm hover:bg-gray-200 active:bg-gray-300 disabled:bg-gray-50 disabled:cursor-not-allowed transition-all"
+                              title="Cancel editing"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => startEdit(hyp)}
+                            className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-md shadow-sm hover:bg-blue-700 active:bg-blue-800 transition-all"
+                            title="Edit hypothesis"
+                          >
+                            Edit
+                          </button>
+                        )}
                         <button
                           onClick={() => handleDeleteHypothesis(hyp.hypothesis_id, hyp.hypothesis_text || 'Untitled')}
                           className="inline-flex items-center justify-center px-3 py-1.5 text-xs font-semibold text-white bg-red-600 rounded-md shadow-sm hover:bg-red-700 active:bg-red-800 transition-all"
@@ -260,11 +341,30 @@ export default function HypothesesPage() {
                     <td className="px-3 py-4 text-sm font-medium text-gray-900" style={{ maxWidth: '400px' }}>
                       <div className="flex items-start gap-2">
                         <div className="flex-1">
-                          {hyp.hypothesis_text 
-                            ? (hyp.hypothesis_text.length > 150 
-                                ? hyp.hypothesis_text.substring(0, 150) + '...' 
-                                : hyp.hypothesis_text)
-                            : '-'}
+                          {editingHypothesisId === hyp.hypothesis_id ? (
+                            <div className="space-y-2">
+                              <textarea
+                                value={editHypothesisText}
+                                onChange={(e) => setEditHypothesisText(e.target.value)}
+                                rows={3}
+                                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border text-gray-900"
+                              />
+                              <textarea
+                                value={editDescription}
+                                onChange={(e) => setEditDescription(e.target.value)}
+                                rows={3}
+                                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border text-gray-900"
+                                placeholder="Description (optional)"
+                              />
+                              {editError && <p className="text-xs text-red-600">{editError}</p>}
+                            </div>
+                          ) : (
+                            (hyp.hypothesis_text
+                              ? (hyp.hypothesis_text.length > 150
+                                  ? hyp.hypothesis_text.substring(0, 150) + '...'
+                                  : hyp.hypothesis_text)
+                              : '-')
+                          )}
                         </div>
                         {hyp.reference_url && (
                           <a 

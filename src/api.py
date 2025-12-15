@@ -112,6 +112,8 @@ class HypothesisEvidenceEntry(BaseModel):
     analysis_text: str | None
     authored_by: str
     created_at: datetime
+    hypothesis_updated_at: datetime
+    freshness_status: str
     segment_text_preview: str | None
     document_id: str | None
     document_title: str | None
@@ -126,7 +128,7 @@ class SegmentHypothesis(BaseModel):
     reference_type: str | None
     verdict: str | None
     analysis_text: str | None
-    created_at: datetime
+    created_at: datetime  # last analysis update time for the segment↔hypothesis link
 
 
 class HypothesisCreate(BaseModel):
@@ -138,6 +140,23 @@ class HypothesisCreate(BaseModel):
 
 class HypothesisResponse(BaseModel):
     hypothesis_id: str
+
+
+class HypothesisDetail(BaseModel):
+    hypothesis_id: str
+    hypothesis_text: str | None
+    description: str | None
+    reference_url: str | None
+    reference_type: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class HypothesisUpdate(BaseModel):
+    hypothesis_text: str | None = None
+    description: str | None = None
+    reference_url: str | None = None
+    reference_type: str | None = None
 
 
 class HypothesisSuggestion(BaseModel):
@@ -585,7 +604,7 @@ async def list_segments() -> list[Segment]:
                     SELECT 
                         segment_id,
                         COUNT(DISTINCT hypothesis_id) as hypothesis_count
-                    FROM hypothesis_evidence
+                    FROM hypothesis_segment_links
                     GROUP BY segment_id
                 ) hyp_counts ON s.id = hyp_counts.segment_id
                 ORDER BY s.created_at DESC
@@ -772,8 +791,8 @@ async def create_manual_segment(req: SegmentCreate) -> SegmentResponse:
 @app.get("/segments/{segment_id}/hypotheses", response_model=List[SegmentHypothesis])
 async def get_segment_hypotheses(segment_id: str):
     """
-    Get all hypotheses linked to a specific segment via hypothesis_evidence.
-    Returns the hypothesis details along with the evidence verdict/analysis for this segment.
+    Get all hypotheses linked to a specific segment via hypothesis_segment_links.
+    Returns the hypothesis details along with the latest verdict/analysis for this segment.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
@@ -786,13 +805,13 @@ async def get_segment_hypotheses(segment_id: str):
                     h.description,
                     h.reference_url,
                     h.reference_type,
-                    he.verdict,
-                    he.analysis_text,
-                    he.created_at
-                FROM hypothesis_evidence he
-                JOIN hypotheses h ON he.hypothesis_id = h.id
-                WHERE he.segment_id = %s
-                ORDER BY he.created_at DESC
+                    l.verdict,
+                    l.analysis_text,
+                    l.updated_at as created_at
+                FROM hypothesis_segment_links l
+                JOIN hypotheses h ON l.hypothesis_id = h.id
+                WHERE l.segment_id = %s
+                ORDER BY l.updated_at DESC
                 """,
                 (segment_id,)
             )
@@ -819,17 +838,17 @@ async def list_hypotheses():
                     SELECT
                         hypothesis_id,
                         COUNT(*) as evidence_count,
-                        MAX(created_at) as latest_evidence_at
-                    FROM hypothesis_evidence
+                        MAX(updated_at) as latest_evidence_at
+                    FROM hypothesis_segment_links
                     GROUP BY hypothesis_id
                 ),
                 latest_evidence AS (
                     SELECT DISTINCT ON (hypothesis_id)
                         hypothesis_id,
                         segment_id,
-                        created_at
-                    FROM hypothesis_evidence
-                    ORDER BY hypothesis_id, created_at DESC
+                        updated_at
+                    FROM hypothesis_segment_links
+                    ORDER BY hypothesis_id, updated_at DESC
                 )
                 SELECT
                     h.id as hypothesis_id,
@@ -837,7 +856,7 @@ async def list_hypotheses():
                     h.description,
                     h.reference_url,
                     h.reference_type,
-                    COALESCE(es.latest_evidence_at, h.updated_at) as last_updated_at,
+                    GREATEST(h.updated_at, COALESCE(es.latest_evidence_at, h.updated_at)) as last_updated_at,
                     COALESCE(es.evidence_count, 0) as evidence_count,
                     le.segment_id as latest_segment_id,
                     LEFT(s.text, 200) as latest_segment_text_preview,
@@ -888,6 +907,95 @@ async def create_hypothesis(req: HypothesisCreate) -> HypothesisResponse:
     return HypothesisResponse(hypothesis_id=hypothesis_id)
 
 
+@app.get("/hypotheses/{hypothesis_id}", response_model=HypothesisDetail)
+async def get_hypothesis(hypothesis_id: str) -> HypothesisDetail:
+    """Fetch a single hypothesis by ID."""
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    id as hypothesis_id,
+                    hypothesis_text,
+                    description,
+                    reference_url,
+                    reference_type,
+                    created_at,
+                    updated_at
+                FROM hypotheses
+                WHERE id = %s
+                """,
+                (hypothesis_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Hypothesis not found")
+            d = dict(row)
+            d["hypothesis_id"] = str(d["hypothesis_id"])
+            return HypothesisDetail(**d)
+
+
+@app.patch("/hypotheses/{hypothesis_id}", response_model=HypothesisDetail)
+async def update_hypothesis(hypothesis_id: str, update: HypothesisUpdate) -> HypothesisDetail:
+    """Update hypothesis fields (ID is stable)."""
+    fields: list[str] = []
+    values: list[Any] = []
+
+    if update.hypothesis_text is not None:
+        ht = update.hypothesis_text.strip()
+        if not ht:
+            raise HTTPException(status_code=400, detail="hypothesis_text cannot be empty")
+        fields.append("hypothesis_text = %s")
+        values.append(ht)
+
+    if update.description is not None:
+        desc = update.description.strip()
+        values.append(desc if desc else None)
+        fields.append("description = %s")
+
+    if update.reference_url is not None:
+        ref_url = update.reference_url.strip()
+        values.append(ref_url if ref_url else None)
+        fields.append("reference_url = %s")
+
+    if update.reference_type is not None:
+        rt = update.reference_type.strip()
+        values.append(rt if rt else None)
+        fields.append("reference_type = %s")
+
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    values.append(hypothesis_id)
+
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                UPDATE hypotheses
+                SET {", ".join(fields)}
+                WHERE id = %s
+                RETURNING
+                    id as hypothesis_id,
+                    hypothesis_text,
+                    description,
+                    reference_url,
+                    reference_type,
+                    created_at,
+                    updated_at
+                """,
+                values,
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Hypothesis not found")
+            d = dict(row)
+            d["hypothesis_id"] = str(d["hypothesis_id"])
+            return HypothesisDetail(**d)
+
+
 @app.delete("/hypotheses/{hypothesis_id}", status_code=200)
 async def delete_hypothesis(hypothesis_id: str):
     """
@@ -909,8 +1017,8 @@ async def delete_hypothesis(hypothesis_id: str):
 @app.get("/hypotheses/{hypothesis_id}/evidence", response_model=List[HypothesisEvidenceEntry])
 async def get_hypothesis_evidence(hypothesis_id: str):
     """
-    Returns all evidence entries for a given hypothesis, sorted by created_at DESC.
-    Each entry represents one segment linked to this hypothesis with a verdict.
+    Returns the latest evidence state per segment for a given hypothesis.
+    Each entry represents one segment linked to this hypothesis with the latest verdict/analysis.
     """
     pool = _require_pool()
     async with pool.connection() as conn:
@@ -918,21 +1026,27 @@ async def get_hypothesis_evidence(hypothesis_id: str):
             await cur.execute(
                 """
                 SELECT
-                    he.id as evidence_id,
-                    he.hypothesis_id,
-                    he.segment_id,
-                    he.verdict,
-                    he.analysis_text,
-                    he.authored_by,
-                    he.created_at,
+                    l.id as evidence_id,
+                    l.hypothesis_id,
+                    l.segment_id,
+                    l.verdict,
+                    l.analysis_text,
+                    l.authored_by,
+                    l.updated_at as created_at,
+                    h.updated_at as hypothesis_updated_at,
+                    CASE
+                        WHEN l.updated_at < h.updated_at THEN 'stale'
+                        ELSE 'current'
+                    END as freshness_status,
                     LEFT(s.text, 200) as segment_text_preview,
                     d.id as document_id,
                     d.title as document_title
-                FROM hypothesis_evidence he
-                LEFT JOIN segments s ON he.segment_id = s.id
+                FROM hypothesis_segment_links l
+                JOIN hypotheses h ON l.hypothesis_id = h.id
+                LEFT JOIN segments s ON l.segment_id = s.id
                 LEFT JOIN documents d ON s.document_id = d.id
-                WHERE he.hypothesis_id = %s
-                ORDER BY he.created_at DESC
+                WHERE l.hypothesis_id = %s
+                ORDER BY l.updated_at DESC
                 """,
                 (hypothesis_id,)
             )
@@ -1097,7 +1211,7 @@ async def generate_analyst_pov(req: GeneratePovRequest):
 async def save_segment_evidence(segment_id: str, req: SaveEvidenceRequest):
     """
     Saves evidence linking a segment to hypotheses.
-    Creates new hypothesis_evidence records.
+    Updates/creates hypothesis_segment_links (latest state) and appends hypothesis_segment_link_runs (history).
     For new hypotheses (hypothesis_id is null), creates the hypothesis first.
     """
     pool = _require_pool()
@@ -1124,20 +1238,77 @@ async def save_segment_evidence(segment_id: str, req: SaveEvidenceRequest):
                                 raise HTTPException(status_code=500, detail="Failed to create hypothesis.")
                             hypothesis_id = str(row["id"])
 
-                    # Now, insert the evidence record.
+                    # Upsert the stable link row (latest/current state)
                     async with conn.cursor(row_factory=dict_row) as cur:
                         await cur.execute(
                             """
-                            INSERT INTO hypothesis_evidence (hypothesis_id, segment_id, verdict, analysis_text)
-                            VALUES (%s, %s, %s, %s)
+                            INSERT INTO hypothesis_segment_links (hypothesis_id, segment_id, verdict, analysis_text, authored_by)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (hypothesis_id, segment_id)
+                            DO UPDATE SET
+                                verdict = EXCLUDED.verdict,
+                                analysis_text = EXCLUDED.analysis_text,
+                                authored_by = EXCLUDED.authored_by
                             RETURNING id;
                             """,
-                            (hypothesis_id, segment_id, evidence_payload.verdict, evidence_payload.analysis_text)
+                            (hypothesis_id, segment_id, evidence_payload.verdict, evidence_payload.analysis_text, "human")
                         )
-                        evidence_row = await cur.fetchone()
-                        if not evidence_row:
-                            raise HTTPException(status_code=500, detail="Failed to create evidence record.")
-                        evidence_id = str(evidence_row["id"])
+                        link_row = await cur.fetchone()
+                        if not link_row:
+                            raise HTTPException(status_code=500, detail="Failed to create/update link record.")
+                        link_id = str(link_row["id"])
+
+                    # Append a run-history row (what was saved this time)
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        # Snapshot current hypothesis fields into the run row
+                        await cur.execute(
+                            """
+                            SELECT hypothesis_text, description, reference_url, reference_type, updated_at
+                            FROM hypotheses
+                            WHERE id = %s
+                            """,
+                            (hypothesis_id,),
+                        )
+                        hyp_row = await cur.fetchone()
+                        if not hyp_row:
+                            raise HTTPException(status_code=404, detail="Hypothesis not found")
+
+                        await cur.execute(
+                            """
+                            INSERT INTO hypothesis_segment_link_runs (
+                                link_id,
+                                hypothesis_id,
+                                segment_id,
+                                verdict,
+                                analysis_text,
+                                authored_by,
+                                hypothesis_text_snapshot,
+                                description_snapshot,
+                                reference_url_snapshot,
+                                reference_type_snapshot,
+                                hypothesis_updated_at_snapshot
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id;
+                            """,
+                            (
+                                link_id,
+                                hypothesis_id,
+                                segment_id,
+                                evidence_payload.verdict,
+                                evidence_payload.analysis_text,
+                                "human",
+                                hyp_row["hypothesis_text"],
+                                hyp_row.get("description"),
+                                hyp_row.get("reference_url"),
+                                hyp_row.get("reference_type"),
+                                hyp_row.get("updated_at"),
+                            ),
+                        )
+                        run_row = await cur.fetchone()
+                        if not run_row:
+                            raise HTTPException(status_code=500, detail="Failed to create run history record.")
+                        evidence_id = str(run_row["id"])
 
                     # If a POV was generated, link it to the evidence record and finalize it.
                     if evidence_payload.pov_id:
@@ -1145,7 +1316,7 @@ async def save_segment_evidence(segment_id: str, req: SaveEvidenceRequest):
                             await cur.execute(
                                 """
                                 UPDATE persona_topic_povs
-                                SET hypothesis_evidence_id = %s, run_status = 'final', updated_at = now()
+                                SET hypothesis_segment_link_run_id = %s, run_status = 'final', updated_at = now()
                                 WHERE id = %s;
                                 """,
                                 (evidence_id, evidence_payload.pov_id)
@@ -1174,7 +1345,7 @@ async def list_questions():
                     q.created_at,
                     COALESCE(COUNT(qh.hypothesis_id), 0) as hypothesis_count
                 FROM questions q
-                LEFT JOIN question_hypotheses qh ON q.id = qh.question_id
+                LEFT JOIN question_hypothesis_links qh ON q.id = qh.question_id
                 GROUP BY q.id, q.question_text, q.created_at
                 ORDER BY q.created_at DESC
                 """
@@ -1233,7 +1404,7 @@ async def link_hypothesis_to_question(question_id: str, req: QuestionHypothesisL
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    INSERT INTO question_hypotheses (question_id, hypothesis_id)
+                    INSERT INTO question_hypothesis_links (question_id, hypothesis_id)
                     VALUES (%s, %s)
                     ON CONFLICT (question_id, hypothesis_id) DO NOTHING
                     RETURNING id
@@ -1263,11 +1434,11 @@ async def get_question_hypotheses(question_id: str):
                     h.reference_type,
                     h.created_at,
                     COALESCE(ev_counts.evidence_count, 0) as evidence_count
-                FROM question_hypotheses qh
+                FROM question_hypothesis_links qh
                 JOIN hypotheses h ON qh.hypothesis_id = h.id
                 LEFT JOIN (
                     SELECT hypothesis_id, COUNT(*) as evidence_count
-                    FROM hypothesis_evidence
+                    FROM hypothesis_segment_links
                     GROUP BY hypothesis_id
                 ) ev_counts ON h.id = ev_counts.hypothesis_id
                 WHERE qh.question_id = %s

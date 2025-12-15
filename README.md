@@ -4,13 +4,15 @@ Signal/Noise is a pipeline for ingesting audio/text content, segmenting it into 
 
 ## Status: Active Development (Hypothesis-Centric Architecture)
 
-**Last Updated:** Dec 14, 2025
+**Last Updated:** Dec 15, 2025
 
 ### Recent Major Architecture Changes
 - **Hypothesis-Centric Schema:** Restructured data model from topic-based to hypothesis-based.
     - `hypotheses` - Standalone, testable propositions (the primary entity).
-    - `hypothesis_evidence` - Links segments to hypotheses with verdicts (confirms/refutes/nuances).
+    - `hypothesis_segment_links` - Stable hypothesis↔segment pairs storing the latest verdict/analysis.
+    - `hypothesis_segment_link_runs` - Append-only history of saved analyses per hypothesis↔segment pair.
     - `questions` - Navigation aids that can link to relevant hypotheses (P2 feature).
+    - `hypothesis_versions` - Hypothesis edit history (snapshots of hypothesis text/description/reference before updates).
 - **External Reference Support:** Hypotheses can now link to external documents (papers, articles, books).
     - Store brief summaries in `description` field.
     - Link to full content via `reference_url` and `reference_type`.
@@ -38,8 +40,9 @@ Signal/Noise is a pipeline for ingesting audio/text content, segmenting it into 
 - [x] **Hypotheses:**
     - List All (`GET /hypotheses`) - Returns all hypotheses with evidence counts and reference metadata.
     - Create (`POST /hypotheses`) - Create new hypothesis with optional reference URL/type.
+    - Update (`PATCH /hypotheses/{id}`) - Edit hypothesis text/description/reference fields (ID is stable). Writes edit history to `hypothesis_versions`.
     - Delete (`DELETE /hypotheses/{id}`) - Delete hypothesis and all related evidence (CASCADE).
-    - Get Evidence (`GET /hypotheses/{id}/evidence`) - Get evidence trail for a hypothesis.
+    - Get Evidence (`GET /hypotheses/{id}/evidence`) - Get latest evidence state per segment for a hypothesis (stale/current based on hypothesis updates).
     - Get Reference (`GET /hypotheses/{id}/reference`) - Fetch full reference document (cached).
     - Suggest (`POST /segments/{id}/hypotheses:suggest`) - LLM-based hypothesis suggestions.
     - Save Evidence (`POST /segments/{id}/evidence`) - Link segment to hypothesis with verdict.
@@ -69,7 +72,7 @@ Signal/Noise is a pipeline for ingesting audio/text content, segmenting it into 
     - "Use full reference document" toggle for deep analysis (includes complete paper).
     - "Run Evidence Analysis" button with AI verdict generation.
     - Analysis mode badge showing whether summary or full reference was used.
-    - "Save Evidence" persisting to `hypothesis_evidence`.
+    - "Save Evidence" updates `hypothesis_segment_links` and appends to `hypothesis_segment_link_runs`.
     - Hypothesis selection checkboxes for selective saving.
 - [x] **Hypotheses Page:** (`/hypotheses`)
     - List all hypotheses with evidence counts.
@@ -128,17 +131,19 @@ Signal/Noise is a pipeline for ingesting audio/text content, segmenting it into 
    # Run migrations in order
    psql $SUPABASE_DB_URL < sql/004_hypothesis_centric_schema.sql
    psql $SUPABASE_DB_URL < sql/005_add_hypothesis_references.sql
+   psql $SUPABASE_DB_URL < sql/006_hypothesis_versions.sql
+   psql $SUPABASE_DB_URL < sql/007_hypothesis_segment_links.sql
    
    # Optional: Add Big World Hypothesis example
    export PYTHONPATH=.
-   python scripts/add_bigworld_hypothesis.py
+   python3 scripts/add_bigworld_hypothesis.py
    ```
 
 2. **Backend API:**
    ```bash
    # In root directory
    export PYTHONPATH=.
-   python -m uvicorn src.api:app --host 127.0.0.1 --port 8000 --reload
+   python3 -m uvicorn src.api:app --host 127.0.0.1 --port 8000 --reload
    ```
 
 3. **Frontend:**

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -12,6 +12,8 @@ interface HypothesisEvidenceEntry {
   analysis_text: string | null;
   authored_by: string;
   created_at: string;
+  hypothesis_updated_at: string;
+  freshness_status: string;
   segment_text_preview: string | null;
   document_id: string | null;
   document_title: string | null;
@@ -36,6 +38,22 @@ function VerdictBadge({ verdict }: { verdict: string | null }) {
   );
 }
 
+function FreshnessBadge({ status }: { status: string }) {
+  const normalized = (status || '').toLowerCase();
+  if (normalized === 'stale') {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+        Stale
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+      Current
+    </span>
+  );
+}
+
 export default function HypothesisEvidencePage() {
   const params = useParams();
   const hypothesisId = params.hypothesisId as string;
@@ -43,26 +61,23 @@ export default function HypothesisEvidencePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!hypothesisId) return;
-    fetchEvidence();
-  }, [hypothesisId]);
-
-  const fetchEvidence = async () => {
+  const fetchEvidence = useCallback(async () => {
     try {
+      if (!hypothesisId) return;
       const res = await fetch(`http://127.0.0.1:8000/hypotheses/${hypothesisId}/evidence`);
       if (!res.ok) throw new Error('Failed to fetch hypothesis evidence');
       const data = await res.json();
       setEvidence(data);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  };
+  }, [hypothesisId]);
 
-  // Get hypothesis text from first evidence entry (or show placeholder)
-  const hypothesisText = evidence.length > 0 ? 'Hypothesis Evidence Trail' : 'Hypothesis Evidence';
+  useEffect(() => {
+    fetchEvidence();
+  }, [fetchEvidence]);
 
   if (loading) return <div className="p-8">Loading evidence...</div>;
   if (error) return <div className="p-8 text-red-600">Error: {error}</div>;
@@ -91,6 +106,9 @@ export default function HypothesisEvidencePage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
+                  <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
+                    Status
+                  </th>
                   <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
                     Verdict
                   </th>
@@ -101,7 +119,7 @@ export default function HypothesisEvidencePage() {
                     Segment
                   </th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
-                    Date
+                    Evidence saved
                   </th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
                     Actions
@@ -111,13 +129,16 @@ export default function HypothesisEvidencePage() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {evidence.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
+                    <td colSpan={6} className="px-6 py-4 text-center text-sm text-gray-500">
                       No evidence found for this hypothesis. Analyze segments to add evidence.
                     </td>
                   </tr>
                 ) : (
                   evidence.map((entry) => (
                     <tr key={entry.evidence_id} className="hover:bg-gray-50">
+                      <td className="px-3 py-4">
+                        <FreshnessBadge status={entry.freshness_status} />
+                      </td>
                       <td className="px-3 py-4">
                         <VerdictBadge verdict={entry.verdict} />
                       </td>
